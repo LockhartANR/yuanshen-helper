@@ -1,0 +1,19 @@
+node_modules/
+dist/
+release/
+.npm-cache/
+.tmp/
+.tmp*
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local secrets / packaged artifacts
+.env
+.env.*
+*.pem
+*.key
+*.crx
+dist.crx
+dist.pem

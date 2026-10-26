@@ -1,0 +1,42 @@
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+function makeSvg(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '2')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  svg.setAttribute('class', 'icon')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('focusable', 'false')
+  return svg
+}
+
+function add(svg: SVGSVGElement, tag: string, attrs: Record<string, string>): void {
+  const node = document.createElementNS(SVG_NS, tag)
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value)
+  svg.append(node)
+}
+
+export type IconName = 'search' | 'settings' | 'refresh'
+
+export function icon(name: IconName): SVGSVGElement {
+  const svg = makeSvg()
+
+  if (name === 'search') {
+    add(svg, 'circle', { cx: '11', cy: '11', r: '7' })
+    add(svg, 'path', { d: 'M20 20l-4.4-4.4' })
+  } else if (name === 'settings') {
+    add(svg, 'path', { d: 'M4 7h16M4 12h16M4 17h16' })
+    add(svg, 'circle', { cx: '9', cy: '7', r: '2.3', fill: 'currentColor', stroke: 'none' })
+    add(svg, 'circle', { cx: '15', cy: '12', r: '2.3', fill: 'currentColor', stroke: 'none' })
+    add(svg, 'circle', { cx: '7', cy: '17', r: '2.3', fill: 'currentColor', stroke: 'none' })
+  } else {
+    add(svg, 'path', { d: 'M20 11a8 8 0 1 0-2.3 6.3' })
+    add(svg, 'path', { d: 'M20 4v7h-7' })
+  }
+
+  return svg
+}

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "元神助手",
+  "version": "0.1.0",
+  "description": "开源扫雷网（openms.top）辅助工具：站内用户搜索、标识反查（默认关闭），数据仅存本地。",
+  "minimum_chrome_version": "120",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://openms.top/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "元神助手 · 用户搜索"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
