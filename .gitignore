@@ -5,6 +5,7 @@ release/
 .tmp/
 .tmp*
 coverage/
+docs/preview/
 *.log
 .DS_Store
 Thumbs.db
