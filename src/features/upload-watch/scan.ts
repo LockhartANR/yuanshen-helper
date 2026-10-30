@@ -64,11 +64,8 @@ export function createEntry(
     mtime,
     status,
     firstSeenAt: now,
-    doneAt: 0,
     attempts: 0,
     nextAttemptAt: 0,
-    siteId: 0,
-    state: '',
     reason: '',
   }
 }

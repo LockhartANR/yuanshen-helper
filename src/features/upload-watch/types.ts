@@ -55,12 +55,8 @@ export interface WatchFile {
   mtime: number
   status: WatchFileStatus
   firstSeenAt: number
-  doneAt: number
   attempts: number
   nextAttemptAt: number
-  siteId: number
-  /** 站点返回的审核状态：c / a / b / d / e */
-  state: string
   reason: string
 }
 
@@ -78,8 +74,6 @@ export interface WatchStatus {
   matchedFiles: number
   /** 最近一轮看到的子目录数 */
   subdirs: number
-  /** 实际生效的扫描间隔（毫秒），用于暴露降级 */
-  intervalMs: number
   message: string
   updatedAt: number
 }
@@ -95,7 +89,6 @@ export const DEFAULT_WATCH_STATUS: WatchStatus = {
   totalFiles: 0,
   matchedFiles: 0,
   subdirs: 0,
-  intervalMs: 0,
   message: '',
   updatedAt: 0,
 }

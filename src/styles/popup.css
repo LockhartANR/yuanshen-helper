@@ -60,6 +60,10 @@ body {
   background: #dc2626;
 }
 
+.icon-button.is-active {
+  color: #16a34a;
+}
+
 .brand {
   display: flex;
   flex: 1;

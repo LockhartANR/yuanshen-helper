@@ -217,7 +217,7 @@ describe('drainQueue', () => {
     })
 
     expect(result.done).toBe(1)
-    expect(files.get('a.evf')).toMatchObject({ status: 'done', siteId: 7, state: 'c' })
+    expect(files.get('a.evf')).toMatchObject({ status: 'done', reason: '' })
   })
 
   it('backs off and eventually fails after max attempts', async () => {

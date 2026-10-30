@@ -5,6 +5,7 @@ import { addLog } from '../../shared/log'
 import { getSettings, saveSettings, type Settings } from '../../shared/settings'
 import { onDataChanged } from '../../shared/bus'
 import { getWatchSettings } from '../upload-watch/settings'
+import { pauseWatch, startWatch } from '../upload-watch/controller'
 import {
   debounce,
   el,
@@ -87,33 +88,75 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
     void chrome.tabs.create({ url: chrome.runtime.getURL('upload.html') })
   })
 
+  const watchButton = el('button', 'icon-button watch-toggle')
+  watchButton.type = 'button'
+  watchButton.title = '开始自动上传'
+  watchButton.setAttribute('aria-label', '开始或暂停自动上传')
+  watchButton.append(icon('play'))
+  watchButton.addEventListener('click', () => void toggleWatch())
+
   const headerActions = el('div', 'header-actions')
-  headerActions.append(uploadButton, optionsButton)
+  headerActions.append(watchButton, uploadButton, optionsButton)
   header.append(brand, headerActions)
 
-  void getWatchSettings()
-    .then((watch) => {
+  void refreshWatchState()
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.uploadWatch) void refreshWatchState()
+  })
+
+  let watchBusy = false
+
+  async function toggleWatch(): Promise<void> {
+    if (watchBusy) return
+    watchBusy = true
+    watchButton.disabled = true
+    try {
+      const watch = await getWatchSettings()
       if (watch.state === 'watching') {
-        uploadButton.classList.add('is-running')
-        uploadButton.title = '自动上传 · 监视中'
-        return
+        await pauseWatch()
+      } else {
+        const result = await startWatch()
+        if (!result.ok) {
+          // 缺目录、没授权、没登录都交给页面处理，带上原因让页面直接给出提示
+          const reason = result.reason ?? 'error'
+          void chrome.tabs.create({
+            url: `${chrome.runtime.getURL('upload.html')}?reason=${reason}`,
+          })
+          return
+        }
       }
-      if (watch.state === 'waiting-login') {
-        uploadButton.classList.add('needs-attention')
-        uploadButton.title = '自动上传 · 等待登录'
-        return
-      }
-      if (watch.state === 'needs-permission') {
-        uploadButton.classList.add('needs-attention')
-        uploadButton.title = '自动上传 · 需要重新授权'
-        return
-      }
-      if (watch.state === 'stopped') {
-        uploadButton.classList.add('is-stopped')
-        uploadButton.title = '自动上传 · 已停止'
-      }
-    })
-    .catch(() => undefined)
+      await refreshWatchState()
+    } finally {
+      watchBusy = false
+      watchButton.disabled = false
+    }
+  }
+
+  async function refreshWatchState(): Promise<void> {
+    const watch = await getWatchSettings()
+    const watching = watch.state === 'watching'
+
+    watchButton.replaceChildren(icon(watching ? 'pause' : 'play'))
+    watchButton.title = watching ? '暂停自动上传' : '开始自动上传'
+    watchButton.classList.toggle('is-active', watching)
+
+    uploadButton.classList.remove('is-running', 'needs-attention', 'is-stopped')
+    if (watching) {
+      uploadButton.classList.add('is-running')
+      uploadButton.title = '自动上传 · 监视中'
+    } else if (watch.state === 'waiting-login') {
+      uploadButton.classList.add('needs-attention')
+      uploadButton.title = '自动上传 · 等待登录'
+    } else if (watch.state === 'needs-permission') {
+      uploadButton.classList.add('needs-attention')
+      uploadButton.title = '自动上传 · 需要重新授权'
+    } else if (watch.state === 'stopped') {
+      uploadButton.classList.add('is-stopped')
+      uploadButton.title = '自动上传 · 已停止'
+    } else {
+      uploadButton.title = '自动上传'
+    }
+  }
 
   const searchBox = el('div', 'search-box')
   searchBox.append(icon('search'))

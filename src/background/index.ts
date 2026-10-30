@@ -1,4 +1,4 @@
-﻿import {
+import {
   appendWatchLog,
   getWatchSettings,
   getWatchStatus,
@@ -146,16 +146,63 @@ async function forwardUpload(name: string, data: string): Promise<UploadRawRespo
   }
 }
 
-async function pingOffscreen(): Promise<boolean> {
+interface OffscreenProbe {
+  ok: boolean
+  stopped: boolean
+}
+
+async function probeOffscreen(timeoutMs = 800): Promise<OffscreenProbe> {
   try {
-    const response = await Promise.race([
+    const response = (await Promise.race([
       chrome.runtime.sendMessage({ type: 'WATCH_PING' }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
-    ])
-    return Boolean((response as { ok?: boolean } | null)?.ok)
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ])) as { ok?: boolean; stopped?: boolean } | null
+    return { ok: Boolean(response?.ok), stopped: Boolean(response?.stopped) }
   } catch {
-    return false
+    return { ok: false, stopped: false }
   }
+}
+
+/** 刚创建的 offscreen 文档要等脚本跑起来才会应答，轮询一小段时间。 */
+async function waitForOffscreen(timeoutMs = 4000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if ((await probeOffscreen(500)).ok) return true
+    await sleep(200)
+  }
+  return false
+}
+
+/**
+ * 开始/暂停/看门狗都会改 offscreen 文档，快速连点时如果不排队，
+ * 一边建一边关就会互相踩，日志里出现假的「没有响应」。
+ */
+let watchQueue: Promise<unknown> = Promise.resolve()
+
+function serialize<T>(task: () => Promise<T>): Promise<T> {
+  const next = watchQueue.then(task, task)
+  watchQueue = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next
+}
+
+async function beginWatching(): Promise<{ ok: boolean; responsive: boolean }> {
+  const settings = await getWatchSettings()
+  if (settings.state === 'watching') {
+    const probe = await probeOffscreen(500)
+    if (probe.ok && !probe.stopped) return { ok: true, responsive: true }
+  }
+
+  await closeOffscreen()
+  await ensureOffscreen()
+
+  const responsive = await waitForOffscreen()
+  if (!responsive) {
+    await appendWatchLog('后台文档已创建但没有响应，可能是脚本加载失败', 'err')
+  }
+  return { ok: true, responsive }
 }
 
 /** 读站点登录态。null 表示暂时问不到（页面没注入 / 网络问题），不等于未登录。 */
@@ -245,7 +292,7 @@ async function watchdog(): Promise<void> {
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureWatchdog()
-  void watchdog()
+  void serialize(watchdog)
 })
 
 /**
@@ -266,14 +313,17 @@ async function stopWatching(message: string, log: string): Promise<void> {
 async function stopIfNoWindows(): Promise<void> {
   const windows = await chrome.windows.getAll({ windowTypes: ['normal'] })
   if (windows.length > 0) return
-  await stopWatching('所有窗口已关闭，监视已停止', '所有窗口已关闭，监视已停止')
+  await serialize(() =>
+    stopWatching('所有窗口已关闭，监视已停止', '所有窗口已关闭，监视已停止'),
+  )
 }
 
 chrome.runtime.onStartup.addListener(() => {
   void ensureWatchdog()
-  void stopWatching('浏览器重启后监视已停止，点「开始监视」继续', '浏览器重启，监视已停止').then(
-    () => watchdog(),
-  )
+  void serialize(async () => {
+    await stopWatching('浏览器重启后监视已停止，点「开始监视」继续', '浏览器重启，监视已停止')
+    await watchdog()
+  })
 })
 
 chrome.windows.onRemoved.addListener(() => {
@@ -281,7 +331,7 @@ chrome.windows.onRemoved.addListener(() => {
 })
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === WATCHDOG_ALARM) void watchdog()
+  if (alarm.name === WATCHDOG_ALARM) void serialize(watchdog)
 })
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -303,21 +353,12 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 
   switch (request?.type) {
     case 'WATCH_START':
-      // 先关再建：暂停期间旧文档可能还活着但循环已停，直接复用会一直不扫。
-      void closeOffscreen()
-        .then(() => ensureOffscreen())
-        .then(async () => {
-          await sleep(800)
-          const responsive = await pingOffscreen()
-          if (!responsive) {
-            await appendWatchLog('后台文档已创建但没有响应，可能是脚本加载失败', 'err')
-          }
-          sendResponse({ ok: true, responsive })
-        })
+      void serialize(beginWatching)
+        .then((result) => sendResponse(result))
         .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
       return true
     case 'WATCH_STOP':
-      void closeOffscreen()
+      void serialize(() => closeOffscreen())
         .then(() => sendResponse({ ok: true }))
         .catch(() => sendResponse({ ok: true }))
       return true
@@ -333,9 +374,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
         .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
       return true
     case 'WATCH_DIAG':
-      void Promise.all([hasOffscreen(), chrome.alarms.get(WATCHDOG_ALARM), pingOffscreen()])
-        .then(([offscreen, alarm, responsive]) =>
-          sendResponse({ ok: true, offscreen, alarm: Boolean(alarm), responsive }),
+      void Promise.all([hasOffscreen(), chrome.alarms.get(WATCHDOG_ALARM), probeOffscreen()])
+        .then(([offscreen, alarm, probe]) =>
+          sendResponse({ ok: true, offscreen, alarm: Boolean(alarm), responsive: probe.ok }),
         )
         .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
       return true
@@ -362,7 +403,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       void refreshBadge()
       return false
     case 'WATCH_IDLE':
-      void closeOffscreen()
+      void serialize(() => closeOffscreen())
       return false
     case 'WATCH_UPLOAD_REQUEST':
       void forwardUpload(request.name ?? 'replay.evf', request.data ?? '').then(sendResponse)

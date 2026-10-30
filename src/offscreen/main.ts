@@ -14,6 +14,7 @@ import type {
   UploadRawResponse,
   WatchFile,
   WatchSettings,
+  WatchStatus,
 } from '../features/upload-watch/types'
 import { normalizeUploadResult } from '../features/upload-watch/upload'
 
@@ -29,8 +30,11 @@ const STATE_LABEL: Record<string, string> = {
   e: '外部审核',
 }
 
-let timer: ReturnType<typeof setTimeout> | undefined
-let busy = false
+let scanTimer: ReturnType<typeof setTimeout> | undefined
+let pumpTimer: ReturnType<typeof setTimeout> | undefined
+let pumpDueAt = 0
+let scanning = false
+let uploading = false
 let stopped = false
 let reloadPending = false
 let firstScanLogged = false
@@ -57,24 +61,35 @@ async function permissionOf(handle: FileSystemDirectoryHandle): Promise<Permissi
 }
 
 async function publish(
-  message: string,
-  scan?: { total: number; matched: number; subdirs: number },
+  scan?: { total: number; matched: number; subdirs: number; truncated: boolean },
+  message?: string,
 ): Promise<void> {
   const counts = countStatuses(files)
-  await saveWatchStatus({
+  const patch: Partial<WatchStatus> = {
     state: settings.state,
     dirName: settings.dirName,
-    lastScanAt: Date.now(),
     pending: counts.pending,
     uploaded: counts.uploaded,
     skipped: counts.skipped,
     failed: counts.failed,
-    totalFiles: scan?.total ?? 0,
-    matchedFiles: scan?.matched ?? 0,
-    subdirs: scan?.subdirs ?? 0,
-    intervalMs: Math.round(settings.intervalSec * 1000),
-    message,
-  })
+  }
+  if (scan) {
+    patch.lastScanAt = Date.now()
+    patch.totalFiles = scan.total
+    patch.matchedFiles = scan.matched
+    patch.subdirs = scan.subdirs
+    patch.message = scan.truncated ? '本轮文件过多，剩余下轮继续' : ''
+  }
+  if (message !== undefined) patch.message = message
+  await saveWatchStatus(patch)
+}
+
+function clearTimers(): void {
+  clearTimeout(scanTimer)
+  clearTimeout(pumpTimer)
+  scanTimer = undefined
+  pumpTimer = undefined
+  pumpDueAt = 0
 }
 
 async function halt(
@@ -82,7 +97,7 @@ async function halt(
   message: string,
 ): Promise<void> {
   stopped = true
-  clearTimeout(timer)
+  clearTimers()
   settings = await saveWatchSettings({ state, lastError: message })
   await saveWatchStatus({ state, dirName: settings.dirName, message })
   await appendWatchLog(message, state === 'needs-permission' ? 'warn' : 'err')
@@ -139,11 +154,12 @@ const upload: UploadFn = async ({ relPath, name, bytes }) => {
   return outcome
 }
 
-async function tick(): Promise<void> {
-  if (busy || stopped || !dir) return
-  busy = true
+async function scanTick(): Promise<void> {
+  if (scanning || stopped || !dir) return
+  scanning = true
   try {
-    if (reloadPending) {
+    // 上传过程中不要换台账，否则正在写回的状态会被旧快照覆盖
+    if (reloadPending && !uploading) {
       files = await loadLedger()
       reloadPending = false
     }
@@ -177,14 +193,13 @@ async function tick(): Promise<void> {
       )
     }
 
-    const now = Date.now()
     const scan = await scanDirectory(dir, files, {
       recursive: settings.recursive,
       exts: settings.exts,
       skipFail: settings.skipFail,
       stabilityMs: STABILITY_MS,
       maxEntries: 5000,
-      now,
+      now: Date.now(),
     })
     if (!firstScanLogged) {
       firstScanLogged = true
@@ -197,52 +212,92 @@ async function tick(): Promise<void> {
     }
     for (const row of scan.updates) files.set(row.relPath, row)
     await putLedger(scan.updates)
+    await publish(scan)
 
+    // 扫出可传的就立刻唤醒上传，不等下一轮
+    schedulePump(0)
+  } catch (error) {
+    await handleScanError(error)
+  } finally {
+    scanning = false
+  }
+}
+
+async function handleScanError(error: unknown): Promise<void> {
+  if (error instanceof DOMException && error.name === 'NotAllowedError') {
+    await halt('needs-permission', '目录读取权限失效，请重新授权')
+    return
+  }
+  if (error instanceof DOMException && error.name === 'NotFoundError') {
+    await halt('needs-permission', '目录不存在或已被移动，请重新选择目录')
+    return
+  }
+  await appendWatchLog(errorMessage(error), 'err')
+  await saveWatchStatus({ message: errorMessage(error) })
+}
+
+/**
+ * 上传循环和扫描循环是分开的：扫描再慢也不会把正在走的上传队列卡住。
+ */
+async function pump(): Promise<void> {
+  if (uploading || stopped || !dir) return
+  uploading = true
+  try {
     const result = await drainQueue({
       dir,
       files,
       upload,
-      now,
+      now: Date.now(),
       limit: UPLOAD_BATCH,
       onPersist: (file) => putLedger([file]),
     })
 
     if (result.fatal) {
-      await halt(
-        result.fatal.kind === 'auth' ? 'waiting-login' : 'stopped',
-        result.fatal.reason,
-      )
+      await halt(result.fatal.kind === 'auth' ? 'waiting-login' : 'stopped', result.fatal.reason)
       return
     }
+    if (result.attempted > 0) await publish()
 
-    const parts: string[] = []
-    if (scan.truncated) parts.push('本轮文件过多，剩余下轮继续')
-    if (result.done || result.duplicate) parts.push(`本轮上传 ${result.done + result.duplicate}`)
-    if (result.failed) parts.push(`失败 ${result.failed}`)
-    if (result.retry) parts.push(`待重试 ${result.retry}`)
-    await publish(parts.join(' · '), scan)
+    const delay = nextPendingDelay()
+    if (delay !== null) schedulePump(delay)
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'NotAllowedError') {
-      await halt('needs-permission', '目录读取权限失效，请重新授权')
-      return
-    }
-    if (error instanceof DOMException && error.name === 'NotFoundError') {
-      await halt('needs-permission', '目录不存在或已被移动，请重新选择目录')
-      return
-    }
     await appendWatchLog(errorMessage(error), 'err')
-    await saveWatchStatus({ message: errorMessage(error) })
   } finally {
-    busy = false
+    uploading = false
   }
 }
 
-function schedule(): void {
-  clearTimeout(timer)
+/** 队列里最近还有多久能再传：有立即可传的返回 0，全在退避里就等到最近的一条。 */
+function nextPendingDelay(): number | null {
+  const now = Date.now()
+  let soonest = Number.POSITIVE_INFINITY
+  for (const file of files.values()) {
+    if (file.status !== 'queued') continue
+    soonest = Math.min(soonest, Math.max(0, file.nextAttemptAt - now))
+  }
+  if (soonest === Number.POSITIVE_INFINITY) return null
+  return Math.min(soonest, 5000)
+}
+
+function schedulePump(delay: number): void {
+  if (stopped) return
+  const due = Date.now() + delay
+  if (pumpTimer !== undefined && pumpDueAt <= due) return
+  if (pumpTimer !== undefined) clearTimeout(pumpTimer)
+  pumpDueAt = due
+  pumpTimer = setTimeout(() => {
+    pumpTimer = undefined
+    pumpDueAt = 0
+    void pump()
+  }, delay)
+}
+
+function scheduleScan(): void {
+  clearTimeout(scanTimer)
   const seconds = Math.max(5, Math.min(300, settings.intervalSec))
-  timer = setTimeout(() => {
-    void tick().then(() => {
-      if (!stopped) schedule()
+  scanTimer = setTimeout(() => {
+    void scanTick().then(() => {
+      if (!stopped) scheduleScan()
     })
   }, seconds * 1000)
 }
@@ -261,7 +316,7 @@ async function boot(): Promise<void> {
     return
   }
   // offscreen 里 queryPermission 可能拿不到页面那次授权，返回 prompt。
-  // 这种情况先不拦，真读不了时 tick 会抛 NotAllowedError，再转 needs-permission。
+  // 这种情况先不拦，真读不了时扫描会抛 NotAllowedError，再转 needs-permission。
   if ((await permissionOf(handle)) === 'denied') {
     await halt('needs-permission', '目录访问被拒绝，请重新选择目录')
     return
@@ -270,8 +325,11 @@ async function boot(): Promise<void> {
   dir = handle as unknown as DirectoryLike
   files = await loadLedger()
 
-  await tick()
-  if (!stopped) schedule()
+  await scanTick()
+  if (!stopped) {
+    scheduleScan()
+    schedulePump(0)
+  }
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
@@ -287,11 +345,11 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     })
     return false
   }
-  if (type === 'WATCH_TICK') void tick()
+  if (type === 'WATCH_TICK') void scanTick()
   if (type === 'WATCH_RELOAD') reloadPending = true
   if (type === 'WATCH_STOP') {
     stopped = true
-    clearTimeout(timer)
+    clearTimers()
   }
   return false
 })

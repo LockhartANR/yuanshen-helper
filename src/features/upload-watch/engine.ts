@@ -79,21 +79,16 @@ export async function drainQueue(args: {
     switch (outcome.kind) {
       case 'done':
         file.status = 'done'
-        file.doneAt = now
-        file.siteId = outcome.id
-        file.state = outcome.state
         file.reason = ''
         result.done += 1
         break
       case 'duplicate':
         file.status = 'done'
-        file.doneAt = now
         file.reason = '网站已有'
         result.duplicate += 1
         break
       case 'skipped':
         file.status = 'skipped'
-        file.doneAt = now
         file.reason = outcome.reason
         result.skipped += 1
         break

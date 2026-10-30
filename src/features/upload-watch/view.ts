@@ -1,5 +1,7 @@
+import { DEVELOPER_LINKS, REPO_URL } from '../../shared/constants'
 import { formatDateTime } from '../../shared/format'
-import { brandLogo, el, errorMessage } from '../../shared/ui'
+import { brandLogo, el, errorMessage, externalLink } from '../../shared/ui'
+import { pauseWatch, send, startWatch } from './controller'
 import {
   clearWatchLogs,
   getWatchLogs,
@@ -31,17 +33,6 @@ const STATE_LABEL: Record<WatchState, string> = {
   'needs-permission': '需要重新授权',
   'waiting-login': '等待登录',
   stopped: '已停止',
-}
-
-async function post<T = { ok?: boolean; error?: string }>(
-  message: Record<string, unknown>,
-): Promise<T | undefined> {
-  try {
-    return (await chrome.runtime.sendMessage(message)) as T
-  } catch {
-    // 后台没起来时消息会失败，状态由下一次 watchdog 纠正
-    return undefined
-  }
 }
 
 function clampInterval(value: number): number {
@@ -86,14 +77,20 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
       return titles
     })(),
   )
+  const consoleLink = el('a', 'site-link', '控制台 ↗') as HTMLAnchorElement
+  consoleLink.href = chrome.runtime.getURL('options.html')
+  consoleLink.target = '_blank'
+  consoleLink.rel = 'noreferrer'
+
+  const headerActions = el('div', 'header-links')
   if (permission !== 'granted') {
     const grant = el('button', 'button primary', '重新授权') as HTMLButtonElement
     grant.type = 'button'
-    grant.addEventListener('click', () => void resumeAfterGrant())
-    header.append(brand, grant)
-  } else {
-    header.append(brand)
+    grant.addEventListener('click', () => void startWatching())
+    headerActions.append(grant)
   }
+  headerActions.append(consoleLink)
+  header.append(brand, headerActions)
 
   // ---------------- 目录 ----------------
   const dirCard = el('section', 'card')
@@ -210,7 +207,7 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   }
   startButton.addEventListener('click', () => void startWatching())
   pauseButton.addEventListener('click', () => void pauseWatching())
-  scanButton.addEventListener('click', () => void post({ type: 'WATCH_TICK' }))
+  scanButton.addEventListener('click', () => void send({ type: 'WATCH_TICK' }))
   retryButton.addEventListener('click', () => void retryFailed())
   clearButton.addEventListener('click', () => void clearLedger())
 
@@ -312,12 +309,43 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   const logList = el('div', 'logs')
   logCard.append(logHead, logList)
 
-  page.append(header, dirCard, settingsCard, runCard, rulesCard, diagCard, logCard)
+  const footer = el('footer', 'page-footer')
+  footer.append(
+    `元神助手 v${chrome.runtime.getManifest().version} · `,
+    externalLink('仓库 ↗', REPO_URL),
+    el('br'),
+    '作者：',
+  )
+  for (const item of DEVELOPER_LINKS) {
+    footer.append(externalLink(`${item.label} ↗`, item.url), document.createTextNode(' '))
+  }
+
+  page.append(header, dirCard, settingsCard, runCard, rulesCard, diagCard, logCard, footer)
   root.append(page)
 
   render()
   void refreshDiag()
   if (settings.state === 'waiting-login') showLoginDialog(true)
+
+  // 从 popup 快捷按钮失败后跳过来，按原因直接给出对应提示
+  const reason = new URLSearchParams(location.search).get('reason')
+  if (reason) {
+    try {
+      history.replaceState(null, '', location.pathname)
+    } catch {
+      // 某些环境下改 URL 会失败，不影响提示
+    }
+    if (reason === 'login' && settings.state !== 'waiting-login') {
+      showLoginDialog(false)
+    } else if (reason === 'no-dir') {
+      notice('还没有选择录像目录，先点「选择目录」。')
+      pickButton.focus()
+    } else if (reason === 'permission') {
+      notice('目录读取权限没有授予，请重新选择目录或点「重新授权」。')
+    } else if (reason === 'error') {
+      notice('上次启动失败，请重试或查看日志。')
+    }
+  }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
@@ -366,79 +394,49 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
     }
   }
 
-  async function grantAccess(): Promise<boolean> {
-    if (!handle) {
-      notice('请先选择录像目录。')
-      return false
-    }
-    const request = handle.requestPermission
-    if (!request) {
-      permission = 'granted'
-      render()
-      return true
-    }
-    try {
-      permission = await request.call(handle, { mode: 'read' })
-    } catch (error) {
-      notice(`授权失败：${errorMessage(error)}`)
-      permission = 'denied'
-    }
-    render()
-    return permission === 'granted'
-  }
-
-  async function resumeAfterGrant(): Promise<void> {
-    const granted = await grantAccess()
-    if (granted && settings.state === 'needs-permission') await startWatching()
-  }
-
   async function startWatching(): Promise<void> {
-    if (!handle) {
+    const wasWaiting = settings.state === 'waiting-login'
+    const result = await startWatch()
+
+    if (result.ok) {
+      await refreshPermission()
+      settings = await getWatchSettings()
+      if (result.responsive === false) notice('后台文档没有响应，请看诊断和日志')
+      render()
+      return
+    }
+    if (result.reason === 'no-dir') {
       notice('请先选择录像目录。')
       return
     }
-    if (permission !== 'granted') {
-      const granted = await grantAccess()
-      if (!granted) return
+    if (result.reason === 'permission') {
+      await refreshPermission()
+      notice('目录读取权限没有授予，请重新选择目录或点「重新授权」。')
+      render()
+      return
     }
-
-    const precheck = await post<{ ok?: boolean; loggedIn?: boolean | null; username?: string }>({
-      type: 'WATCH_PRECHECK',
-    })
-    if (precheck?.ok && precheck.loggedIn === false) {
-      const expired = settings.state === 'waiting-login'
+    if (result.reason === 'login') {
       settings = await saveWatchSettings({ state: 'paused', lastError: '' })
       notice('还没有登录 openms.top，登录后再点「开始监视」')
-      showLoginDialog(expired)
+      showLoginDialog(wasWaiting)
       return
     }
-
-    settings = await saveWatchSettings({ state: 'watching', dirName: handle.name, lastError: '' })
-    const response = await post<{ ok?: boolean; responsive?: boolean; error?: string }>({
-      type: 'WATCH_START',
-    })
-    if (response && response.ok === false) {
-      settings = await saveWatchSettings({ state: 'paused' })
-      notice(`启动失败：${response.error ?? '后台拒绝创建任务'}`)
-      return
-    }
-    if (response && response.responsive === false) {
-      notice('后台文档没有响应，请看诊断和日志')
-    }
+    settings = await saveWatchSettings({ state: 'paused' })
+    notice(`启动失败：${result.message ?? '后台拒绝创建任务'}`)
     render()
   }
 
   async function pauseWatching(): Promise<void> {
-    settings = await saveWatchSettings({ state: 'paused' })
-    await post({ type: 'WATCH_STOP' })
+    await pauseWatch()
+    settings = await getWatchSettings()
     render()
   }
 
   async function retryFailed(): Promise<void> {
     const count = await requeueFailed()
     notice(count > 0 ? `已把 ${count} 条失败录像放回队列` : '没有失败的录像')
-    await post({ type: 'WATCH_RELOAD' })
-    await post({ type: 'WATCH_TICK' })
+    await send({ type: 'WATCH_RELOAD' })
+    await send({ type: 'WATCH_TICK' })
   }
 
   async function clearLedger(): Promise<void> {
@@ -447,8 +445,9 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
     )
     if (!ok) return
     await resetLedger()
-    settings = await saveWatchSettings({ baselinePending: true, state: 'paused' })
-    await post({ type: 'WATCH_STOP' })
+    await saveWatchSettings({ baselinePending: true })
+    await pauseWatch()
+    settings = await getWatchSettings()
     render()
   }
 
@@ -458,7 +457,7 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   }
 
   async function refreshDiag(): Promise<void> {
-    const response = await post<{
+    const response = await send<{
       ok?: boolean
       offscreen?: boolean
       alarm?: boolean
