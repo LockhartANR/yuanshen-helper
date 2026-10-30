@@ -1,0 +1,29 @@
+.radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.radio input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.checkbox-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.setting-row .mono {
+  overflow-wrap: anywhere;
+}

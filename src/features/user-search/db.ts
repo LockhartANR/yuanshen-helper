@@ -1,42 +1,12 @@
-import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { IdentifierItem } from './api'
+import {
+  getDb,
+  type IdentifierCacheEntry,
+  type SyncMeta,
+} from '../../shared/db'
 import type { UserRecord } from './model'
 
-type SyncPhase = 'idle' | 'listing' | 'fetching' | 'paused'
+export type { SyncMeta }
 
-export interface SyncMeta {
-  key: string
-  watermark: number
-  userCount: number
-  lastSyncAt: number
-  phase: SyncPhase
-  cursor: number
-}
-
-interface IdentifierCacheEntry {
-  key: string
-  items: IdentifierItem[]
-  fetchedAt: number
-}
-
-interface YuanshenDB extends DBSchema {
-  users: {
-    key: number
-    value: UserRecord
-    indexes: { 'by-username': string }
-  }
-  meta: {
-    key: string
-    value: SyncMeta
-  }
-  identifierCache: {
-    key: string
-    value: IdentifierCacheEntry
-  }
-}
-
-const DB_NAME = 'yuanshen-helper'
-const DB_VERSION = 1
 const SYNC_META_KEY = 'user-search/sync'
 
 export const DEFAULT_SYNC_META: SyncMeta = {
@@ -46,28 +16,6 @@ export const DEFAULT_SYNC_META: SyncMeta = {
   lastSyncAt: 0,
   phase: 'idle',
   cursor: 0,
-}
-
-let dbPromise: Promise<IDBPDatabase<YuanshenDB>> | null = null
-
-function getDb(): Promise<IDBPDatabase<YuanshenDB>> {
-  if (!dbPromise) {
-    dbPromise = openDB<YuanshenDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains('users')) {
-          const store = db.createObjectStore('users', { keyPath: 'id' })
-          store.createIndex('by-username', 'usernameLower')
-        }
-        if (!db.objectStoreNames.contains('meta')) {
-          db.createObjectStore('meta', { keyPath: 'key' })
-        }
-        if (!db.objectStoreNames.contains('identifierCache')) {
-          db.createObjectStore('identifierCache', { keyPath: 'key' })
-        }
-      },
-    })
-  }
-  return dbPromise
 }
 
 export async function putUsers(records: UserRecord[]): Promise<void> {

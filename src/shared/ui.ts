@@ -11,6 +11,18 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
+/** 扩展图标，用在高亮页面的标题区，避免再画一个「元」字方块。 */
+export function brandLogo(size = 44): HTMLImageElement {
+  const img = document.createElement('img')
+  img.className = 'logo'
+  img.src = chrome.runtime.getURL('icons/icon128.png')
+  img.alt = ''
+  img.width = size
+  img.height = size
+  img.decoding = 'async'
+  return img
+}
+
 export function debounce<A extends unknown[]>(
   fn: (...args: A) => void,
   waitMs: number,

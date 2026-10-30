@@ -15,6 +15,8 @@ export default defineConfig({
       input: {
         popup: resolve(root, 'popup.html'),
         options: resolve(root, 'options.html'),
+        upload: resolve(root, 'upload.html'),
+        offscreen: resolve(root, 'offscreen.html'),
       },
     },
   },
