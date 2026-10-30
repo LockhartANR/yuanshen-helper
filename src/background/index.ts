@@ -15,6 +15,8 @@ import type {
 const WATCHDOG_ALARM = 'upload-watch-watchdog'
 const OFFSCREEN_URL = 'offscreen.html'
 const STATUS_KEY = 'uploadWatchStatus'
+/** 内容脚本在站点页面里读到的登录态，避免每次点「我的成绩」都去开标签页。 */
+const SELF_KEY = 'selfSession'
 const SITE_URL = 'https://openms.top/'
 const SITE_MATCH = 'https://openms.top/*'
 
@@ -206,20 +208,28 @@ async function beginWatching(): Promise<{ ok: boolean; responsive: boolean }> {
 }
 
 /** 读站点登录态。null 表示暂时问不到（页面没注入 / 网络问题），不等于未登录。 */
-async function probeLogin(): Promise<{ loggedIn: boolean | null; username: string }> {
+async function probeLogin(): Promise<{
+  loggedIn: boolean | null
+  username: string
+  userId: number | null
+}> {
   let tabId: number
   try {
     tabId = await ensureSiteTab()
   } catch {
-    return { loggedIn: null, username: '' }
+    return { loggedIn: null, username: '', userId: null }
   }
   try {
     const response = (await chrome.tabs.sendMessage(tabId, { type: 'YUANSHEN_SESSION' })) as
-      | { loggedIn?: boolean | null; username?: string }
+      | { loggedIn?: boolean | null; username?: string; userId?: number | null }
       | undefined
-    return { loggedIn: response?.loggedIn ?? null, username: response?.username ?? '' }
+    return {
+      loggedIn: response?.loggedIn ?? null,
+      username: response?.username ?? '',
+      userId: typeof response?.userId === 'number' ? response.userId : null,
+    }
   } catch {
-    return { loggedIn: null, username: '' }
+    return { loggedIn: null, username: '', userId: null }
   }
 }
 
@@ -348,6 +358,9 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
         text?: string
         kind?: WatchLogKind
         patch?: unknown
+        userId?: number | null
+        username?: string
+        loggedIn?: boolean | null
       }
     | undefined
 
@@ -371,6 +384,35 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     case 'WATCH_PRECHECK':
       void probeLogin()
         .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
+      return true
+    case 'YUANSHEN_SESSION_REPORT':
+      void chrome.storage.local
+        .set({
+          [SELF_KEY]: {
+            userId: typeof request.userId === 'number' ? request.userId : null,
+            username: typeof request.username === 'string' ? request.username : '',
+            loggedIn: request.loggedIn === true,
+            at: Date.now(),
+          },
+        })
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false }))
+      return true
+    case 'SELF_ID':
+      void chrome.storage.local
+        .get(SELF_KEY)
+        .then((stored) => {
+          const value = stored[SELF_KEY] as
+            | { userId?: number | null; username?: string; loggedIn?: boolean }
+            | undefined
+          sendResponse({
+            ok: true,
+            loggedIn: value?.loggedIn ?? null,
+            username: value?.username ?? '',
+            userId: typeof value?.userId === 'number' ? value.userId : null,
+          })
+        })
         .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
       return true
     case 'WATCH_DIAG':

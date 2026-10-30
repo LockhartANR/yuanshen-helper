@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { IdentifierItem } from '../features/user-search/api'
 import type { UserRecord } from '../features/user-search/model'
+import type { VideoDetail } from '../features/player-stats/model'
 import type { WatchFile } from '../features/upload-watch/types'
 
 export type SyncPhase = 'idle' | 'listing' | 'fetching' | 'paused'
@@ -27,6 +28,21 @@ export interface WatchHandleRecord {
   savedAt: number
 }
 
+/** 玩家数据缓存：一条录像一行，解析字段可以缺失（未过审的默认不抓）。 */
+export interface PlayerVideoRow {
+  userId: number
+  id: number
+  state: string
+  uploadTime: string
+  ongoing: boolean
+  detail: VideoDetail | null
+}
+
+export interface PlayerMeta {
+  userId: number
+  fetchedAt: number
+}
+
 interface YuanshenDB extends DBSchema {
   users: {
     key: number
@@ -50,10 +66,19 @@ interface YuanshenDB extends DBSchema {
     value: WatchFile
     indexes: { 'by-status': string }
   }
+  playerVideos: {
+    key: [number, number]
+    value: PlayerVideoRow
+    indexes: { 'by-user': number }
+  }
+  playerMeta: {
+    key: number
+    value: PlayerMeta
+  }
 }
 
 const DB_NAME = 'yuanshen-helper'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 let dbPromise: Promise<IDBPDatabase<YuanshenDB>> | null = null
 
@@ -81,6 +106,13 @@ export function getDb(): Promise<IDBPDatabase<YuanshenDB>> {
         if (!db.objectStoreNames.contains('watchFiles')) {
           const store = db.createObjectStore('watchFiles', { keyPath: 'relPath' })
           store.createIndex('by-status', 'status')
+        }
+        if (!db.objectStoreNames.contains('playerVideos')) {
+          const store = db.createObjectStore('playerVideos', { keyPath: ['userId', 'id'] })
+          store.createIndex('by-user', 'userId')
+        }
+        if (!db.objectStoreNames.contains('playerMeta')) {
+          db.createObjectStore('playerMeta', { keyPath: 'userId' })
         }
       },
     })

@@ -82,6 +82,11 @@ export async function openPlayerTab(id: number): Promise<void> {
   await chrome.tabs.create({ url: PLAYER_URL(id) })
 }
 
+/** 打开扩展内的玩家数据页（PB 表 + 前端成绩）。 */
+export async function openPlayerStatsTab(id: number): Promise<void> {
+  await chrome.tabs.create({ url: chrome.runtime.getURL(`player.html?id=${id}`) })
+}
+
 export function openOptionsPage(): void {
   void chrome.runtime.openOptionsPage()
 }

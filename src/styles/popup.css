@@ -197,6 +197,36 @@ body {
   background: var(--hover);
 }
 
+.result-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+}
+
+.result-row > .result {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.result-stats {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.result-stats:hover {
+  border-left-color: var(--border);
+  background: var(--hover);
+  color: var(--accent);
+}
+
 .result.selected {
   box-shadow: inset 3px 0 0 var(--accent);
 }

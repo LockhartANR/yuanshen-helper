@@ -150,6 +150,30 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
     ),
   )
 
+  const selfCard = el('section', 'card')
+  selfCard.append(
+    el('h2', undefined, '玩家数据'),
+    el(
+      'p',
+      'desc',
+      '「我的成绩」优先用站点登录态；没登录过 openms.top 时可以在这里填一次自己的 ID，之后随时能打开。',
+    ),
+  )
+
+  const selfRow = el('div', 'setting-row')
+  const selfLabel = el('label', 'setting-label', '我的站内 ID')
+  selfLabel.htmlFor = 'self-user-id'
+  const selfInput = el('input', 'text-input') as HTMLInputElement
+  selfInput.id = 'self-user-id'
+  selfInput.type = 'text'
+  selfInput.inputMode = 'numeric'
+  selfInput.autocomplete = 'off'
+  selfInput.placeholder = '例如 16，留空表示不填'
+  const saveSelfButton = el('button', 'button', '保存')
+  saveSelfButton.type = 'button'
+  selfRow.append(selfLabel, selfInput, saveSelfButton)
+  selfCard.append(selfRow)
+
   const logsCard = el('section', 'card')
   const logsHead = el('div', 'section-head')
   logsHead.append(el('h3', undefined, '最近日志'))
@@ -199,7 +223,7 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   const footer = el('footer', 'page-footer')
   footer.textContent = '问题和建议请提到仓库的 Issues。'
 
-  page.append(header, featureCard, settingsCard, logsCard, privacyCard, aboutCard, footer)
+  page.append(header, featureCard, settingsCard, selfCard, logsCard, privacyCard, aboutCard, footer)
   root.append(page)
 
   function setNotice(text: string, isError = false, timeoutMs = 5_000): void {
@@ -288,6 +312,9 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
       apiInput.value = settings.apiBase
     }
     autoCheckbox.checked = settings.autoIncrementalOnPopup
+    if (document.activeElement !== selfInput) {
+      selfInput.value = settings.selfUserId === null ? '' : String(settings.selfUserId)
+    }
 
     renderLogs()
     renderNotice()
@@ -388,8 +415,27 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
     })()
   })
 
-  saveApiButton.addEventListener('click', () => {
+  saveSelfButton.addEventListener('click', () => {
     void (async () => {
+      const raw = selfInput.value.trim()
+      if (raw === '') {
+        settings = await saveSettings({ selfUserId: null })
+        setNotice('已清除我的站内 ID')
+        await refresh()
+        return
+      }
+      const value = Number(raw)
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        setNotice('站内 ID 必须是正整数', true)
+        return
+      }
+      settings = await saveSettings({ selfUserId: value })
+      setNotice(`我的站内 ID 已保存为 ${value}`)
+      await refresh()
+    })().catch((error: unknown) => setNotice(errorMessage(error), true))
+  })
+
+  saveApiButton.addEventListener('click', () => {    void (async () => {
       try {
         settings = await saveSettings({ apiBase: apiInput.value })
         apiInput.value = settings.apiBase

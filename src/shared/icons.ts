@@ -20,7 +20,14 @@ function add(svg: SVGSVGElement, tag: string, attrs: Record<string, string>): vo
   svg.append(node)
 }
 
-export type IconName = 'search' | 'settings' | 'refresh' | 'upload' | 'play' | 'pause'
+export type IconName =
+  | 'search'
+  | 'settings'
+  | 'refresh'
+  | 'upload'
+  | 'play'
+  | 'pause'
+  | 'chart'
 
 export function icon(name: IconName): SVGSVGElement {
   const svg = makeSvg()
@@ -42,6 +49,11 @@ export function icon(name: IconName): SVGSVGElement {
   } else if (name === 'pause') {
     add(svg, 'path', { d: 'M9.5 5v14' })
     add(svg, 'path', { d: 'M14.5 5v14' })
+  } else if (name === 'chart') {
+    add(svg, 'path', { d: 'M4 20v-6' })
+    add(svg, 'path', { d: 'M10 20V9' })
+    add(svg, 'path', { d: 'M16 20V4' })
+    add(svg, 'path', { d: 'M2.5 20h19' })
   } else {
     add(svg, 'path', { d: 'M20 11a8 8 0 1 0-2.3 6.3' })
     add(svg, 'path', { d: 'M20 4v7h-7' })

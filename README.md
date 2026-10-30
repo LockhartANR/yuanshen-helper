@@ -6,7 +6,7 @@
 
 为 [开源扫雷网（openms.top）](https://openms.top) 提供辅助功能的 Chrome 扩展。
 
-当前版本 **0.2.2**。提供站内用户搜索（用户名、实名、英文名、拼音、数字 ID、扫雷标识）和录像自动上传（监视本地录像目录，按周期把新录像传到站点）。所有数据只保存在本机，不上传任何服务器。
+当前版本 **0.3.0**。提供站内用户搜索（用户名、实名、英文名、拼音、数字 ID、扫雷标识）、录像自动上传（监视本地录像目录，按周期把新录像传到站点）和玩家录像数据（PB 表与前端成绩）。所有数据只保存在本机，不上传任何服务器。
 
 ## 功能
 
@@ -19,6 +19,8 @@
 - **键盘操作**：`↑` / `↓` 选择，`Enter` 打开，`Esc` 关闭
 - **姓名状态**：区分普通实名、匿名、隐藏实名
 - **录像自动上传**：选定本地录像目录后按周期轮询，新录像自动传到站点；支持「补传已有」和「只传新的」
+- **玩家录像数据**：搜索结果行右侧「数据」按钮打开独立页面，按软件 / NF 筛选 PB 表，列出初/中/高三级 time、3BVS、STNB 的前五名（普通与纯 NF 两张表）
+- **我的成绩**：popup 头部「我的成绩」按钮直接打开自己的数据页，不用先搜自己；优先用站点登录态（打开 openms.top 时自动记录），没有就弹窗让你填一次站内 ID 并记住。数据页里也有同名按钮，从别人的成绩页一键跳回来
 - 浅色 / 深色主题跟随系统
 
 ## 下载
@@ -157,7 +159,7 @@ npm run build
 ```bash
 npm ci
 npm run typecheck   # TypeScript 类型检查
-npm test            # 55 个单元 / 集成测试
+npm test            # 77 个单元 / 集成测试
 npm run build       # 产物输出到 dist/
 npm run watch       # 持续构建；改完在 chrome://extensions 重新加载
 ```
@@ -173,9 +175,10 @@ src/
 ├── popup/main.ts                 # 搜索窗口入口
 ├── options/main.ts               # 设置页入口
 ├── upload/main.ts                # 自动上传页入口
+├── player/main.ts                # 玩家数据页入口
 ├── background/index.ts           # Service Worker：watchdog、消息路由、badge
 ├── offscreen/main.ts             # 常驻扫描循环（10 秒级）
-├── content/upload.ts             # 站点页内同源上传
+├── content/upload.ts             # 站点页内同源上传、登录态上报
 ├── features/
 │   ├── registry.ts               # 功能注册表
 │   ├── user-search/
@@ -187,16 +190,23 @@ src/
 │   │   ├── sync.ts               # 全量 / 增量 / 断点续跑
 │   │   ├── popup-view.ts         # 搜索窗口 UI
 │   │   └── options-view.ts       # 设置页 UI
-│   └── upload-watch/
-│       ├── scan.ts               # 列目录、稳定性判定、基线
-│       ├── engine.ts             # 队列消费、退避、失败分级
-│       ├── upload.ts             # 上传响应归一化
-│       ├── store.ts              # 目录句柄、台账
-│       ├── settings.ts           # 设置、状态、日志
-│       └── view.ts               # 自动上传页 UI
-├── shared/                       # 数据库连接、设置、日志、格式化、图标、小工具
-└── styles/                       # 基础 / popup / options / upload 样式
-tests/                            # 55 个测试（全部使用合成数据）
+│   ├── upload-watch/
+│   │   ├── scan.ts               # 列目录、稳定性判定、基线
+│   │   ├── engine.ts             # 队列消费、退避、失败分级
+│   │   ├── upload.ts             # 上传响应归一化
+│   │   ├── store.ts              # 目录句柄、台账
+│   │   ├── settings.ts           # 设置、状态、日志
+│   │   └── view.ts               # 自动上传页 UI
+│   └── player-stats/
+│       ├── api.ts                # 录像列表 / 明细分批请求、限流退避
+│       ├── compute.ts            # 判重、PB、前端成绩（纯函数）
+│       ├── model.ts              # 类型、STNB 系数、3BV 下限
+│       ├── service.ts            # 列表 + 明细编排、缓存、未过审补抓
+│       ├── store.ts              # 玩家录像缓存读写
+│       └── view.ts               # 玩家数据页 UI
+├── shared/                       # 数据库连接、设置、日志、格式化、图标、玩家 ID、小工具
+└── styles/                       # 基础 / popup / options / upload / player 样式
+tests/                            # 77 个测试（全部使用合成数据）
 ```
 
 图标源文件在 `assets/icon-source.webp`，可用以下命令重新生成：
@@ -209,7 +219,7 @@ python scripts/make-icons.py
 
 用户资料和标识查询使用 openms.top 提供的公开只读接口。这些接口属于第三方站点，不是本项目提供的服务，可能变更或限流；扩展只按公开接口访问，并遵守站点限制。接口封装见 `src/features/user-search/api.ts`，具体以站点公开文档为准。
 
-自动上传的架构、调度方式和实现过程中的坑记录在 [`docs/upload-watch-plan.md`](docs/upload-watch-plan.md)。
+自动上传的架构、调度方式和实现过程中的坑记录在代码注释里；玩家数据的口径、指标公式和对拍方式见 [`docs/player-stats.md`](docs/player-stats.md)。
 
 ## 限制
 
@@ -220,6 +230,7 @@ python scripts/make-icons.py
 - 自动上传只在浏览器打开时工作；关闭浏览器期间不会上传，重启后也不会自动恢复
 - 自动上传不会输入绝对路径，只能通过目录选择器选择文件夹；浏览器重启后需要重新授权一次
 - 自动上传需要一个 openms.top 标签页承载同源请求，没有时会自动在后台打开一个
+- 「我的成绩」优先用打开站点时记下的登录态；没登录过 openms.top 时需要在弹窗或设置里填一次自己的 ID
 - 用户搜索数据仍不会后台自动更新，只有自动上传有 Service Worker
 - 未上架 Chrome Web Store，只支持手动加载已解压目录（Release 包或 `dist/`）
 

@@ -6,11 +6,13 @@ import { getSettings, saveSettings, type Settings } from '../../shared/settings'
 import { onDataChanged } from '../../shared/bus'
 import { getWatchSettings } from '../upload-watch/settings'
 import { pauseWatch, startWatch } from '../upload-watch/controller'
+import { askSelfId, resolveSelfId } from '../../shared/self-id'
 import {
   debounce,
   el,
   errorMessage,
   openOptionsPage,
+  openPlayerStatsTab,
   openPlayerTab,
 } from '../../shared/ui'
 import {
@@ -95,8 +97,15 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   watchButton.append(icon('play'))
   watchButton.addEventListener('click', () => void toggleWatch())
 
+  const myStatsButton = el('button', 'icon-button stats-entry')
+  myStatsButton.type = 'button'
+  myStatsButton.title = '我的成绩'
+  myStatsButton.setAttribute('aria-label', '打开我的成绩')
+  myStatsButton.append(icon('chart'))
+  myStatsButton.addEventListener('click', () => void openMyStats())
+
   const headerActions = el('div', 'header-actions')
-  headerActions.append(watchButton, uploadButton, optionsButton)
+  headerActions.append(watchButton, myStatsButton, uploadButton, optionsButton)
   header.append(brand, headerActions)
 
   void refreshWatchState()
@@ -104,11 +113,29 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
     if (area === 'local' && changes.uploadWatch) void refreshWatchState()
   })
 
-  let watchBusy = false
+  let headerBusy = false
+
+  async function openMyStats(): Promise<void> {
+    if (headerBusy) return
+    headerBusy = true
+    myStatsButton.disabled = true
+    try {
+      let id = await resolveSelfId()
+      if (id === null) id = await askSelfId(null)
+      if (id === null) return
+      await openPlayerStatsTab(id)
+      window.close()
+    } catch {
+      setHint('打开我的成绩失败，请稍后重试')
+    } finally {
+      headerBusy = false
+      myStatsButton.disabled = false
+    }
+  }
 
   async function toggleWatch(): Promise<void> {
-    if (watchBusy) return
-    watchBusy = true
+    if (headerBusy) return
+    headerBusy = true
     watchButton.disabled = true
     try {
       const watch = await getWatchSettings()
@@ -127,7 +154,7 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
       }
       await refreshWatchState()
     } finally {
-      watchBusy = false
+      headerBusy = false
       watchButton.disabled = false
     }
   }
@@ -322,6 +349,18 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
     return box
   }
 
+  function rowStatsButton(id: number): HTMLButtonElement {
+    const button = el('button', 'result-stats')
+    button.type = 'button'
+    button.append(icon('chart'))
+    button.title = '查看录像数据（PB 表 / 前端成绩）'
+    button.setAttribute('aria-label', `查看 ${id} 的录像数据`)
+    button.addEventListener('click', () => {
+      void openPlayerStatsTab(id).finally(() => window.close())
+    })
+    return button
+  }
+
   function userRow(hit: UserHit): HTMLButtonElement {
     const button = el('button', 'result')
     button.type = 'button'
@@ -423,7 +462,10 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
 
     for (const hit of visibleUsers) {
       const button = userRow(hit)
-      results.append(button)
+      const row = el('div', 'result-row')
+      row.setAttribute('role', 'presentation')
+      row.append(button, rowStatsButton(hit.record.id))
+      results.append(row)
       renderedRows.push({ element: button })
     }
 

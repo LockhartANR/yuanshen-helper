@@ -16,6 +16,7 @@ export default defineConfig({
         popup: resolve(root, 'popup.html'),
         options: resolve(root, 'options.html'),
         upload: resolve(root, 'upload.html'),
+        player: resolve(root, 'player.html'),
         offscreen: resolve(root, 'offscreen.html'),
       },
     },
