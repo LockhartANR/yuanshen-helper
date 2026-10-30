@@ -1,7 +1,7 @@
 {
   "name": "yuanshen-helper",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "元神助手：为开源扫雷网（openms.top）提供辅助功能的浏览器扩展",
   "scripts": {

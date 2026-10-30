@@ -131,8 +131,13 @@ async function scanOnce(cursor?: string) {
     const e = ledger.get(name);
     if (e && e.status !== 'seen') continue; // 已处理过，连 stat 都不做
     const file = await dir.getFileHandle(name).then(h => h.getFile());
-    if (!e) { ledger.set(name, { size: file.size, mtime: file.lastModified, status: 'seen' }); continue; }
-    // 第二轮：稳定性判定
+    // 第一次看到时文件已经静置超过 3 秒，说明早写完了，直接入队
+    if (!e) {
+      const stable = Date.now() - file.lastModified > 3000;
+      ledger.set(name, { size: file.size, mtime: file.lastModified, status: stable ? 'queued' : 'seen' });
+      continue;
+    }
+    // 刚写完不久的文件：下一轮再确认一次
     if (e.size === file.size && e.mtime === file.lastModified && Date.now() - file.lastModified > 3000) {
       ledger.set(name, { ...e, status: 'queued' });
     } else {
@@ -142,7 +147,7 @@ async function scanOnce(cursor?: string) {
 }
 ```
 
-**稳定性判据**：新文件名第一次只记账，第二轮 `size + mtime` 都没变、且 `mtime` 早于 3 秒前，才入队。理由：目录可能被同步盘、录制软件、甚至用户在资源管理器里复制写入，扫到半个文件直接上传会被服务端判 `incomplete` 或 `rust/panic`。代价是最多延迟一个周期。
+**稳定性判据**：文件在第一次被看到时如果已经静置超过 3 秒，直接入队；刚写完（mtime 很新）的才记成 `seen`，下一轮确认 `size + mtime` 没变再入队。理由：目录可能被同步盘、录制软件、甚至用户在资源管理器里复制写入，扫到半个文件直接上传会被服务端判 `incomplete` 或 `rust/panic`。这样常规情况最多等一个周期，可疑文件多等一轮。
 
 **已知取舍**
 
