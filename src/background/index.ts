@@ -1,4 +1,4 @@
-import {
+﻿import {
   appendWatchLog,
   getWatchSettings,
   getWatchStatus,
@@ -158,15 +158,75 @@ async function pingOffscreen(): Promise<boolean> {
   }
 }
 
+/** 读站点登录态。null 表示暂时问不到（页面没注入 / 网络问题），不等于未登录。 */
+async function probeLogin(): Promise<{ loggedIn: boolean | null; username: string }> {
+  let tabId: number
+  try {
+    tabId = await ensureSiteTab()
+  } catch {
+    return { loggedIn: null, username: '' }
+  }
+  try {
+    const response = (await chrome.tabs.sendMessage(tabId, { type: 'YUANSHEN_SESSION' })) as
+      | { loggedIn?: boolean | null; username?: string }
+      | undefined
+    return { loggedIn: response?.loggedIn ?? null, username: response?.username ?? '' }
+  } catch {
+    return { loggedIn: null, username: '' }
+  }
+}
+
 async function refreshBadge(): Promise<void> {
   const status = await getWatchStatus()
-  const show = status.state === 'watching' && status.pending > 0
-  await chrome.action.setBadgeText({ text: show ? String(Math.min(status.pending, 99)) : '' })
-  await chrome.action.setBadgeBackgroundColor({ color: '#c2410c' })
+  let text = ''
+  let color = '#c2410c'
+
+  if (status.state === 'stopped') {
+    text = '!'
+    color = '#dc2626'
+  } else if (status.state === 'needs-permission' || status.state === 'waiting-login') {
+    text = '!'
+    color = '#d97706'
+  } else if (status.state === 'watching' && status.pending > 0) {
+    text = String(Math.min(status.pending, 99))
+  }
+
+  await chrome.action.setBadgeText({ text })
+  await chrome.action.setBadgeBackgroundColor({ color })
+
+  // 悬停提示，顺便当“监视还开着”的提醒
+  let title = '元神助手 · 用户搜索'
+  if (status.state === 'watching') {
+    title =
+      status.pending > 0
+        ? `元神助手 · 自动上传监视中（待传 ${status.pending}）`
+        : '元神助手 · 自动上传监视中'
+  } else if (status.state === 'waiting-login') {
+    title = '元神助手 · 自动上传等待登录'
+  } else if (status.state === 'needs-permission') {
+    title = '元神助手 · 自动上传需要重新授权'
+  } else if (status.state === 'stopped') {
+    const reason = status.message ? `：${status.message.slice(0, 40)}` : ''
+    title = `元神助手 · 自动上传已停止${reason}`
+  }
+  await chrome.action.setTitle({ title })
 }
 
 async function watchdog(): Promise<void> {
   const settings = await getWatchSettings()
+
+  // 登录失效后等用户重新登录：看门狗每分钟探一次，登录上来自动接着传。
+  if (settings.state === 'waiting-login') {
+    if (await hasOffscreen()) await closeOffscreen()
+    const probe = await probeLogin()
+    if (probe.loggedIn !== true) return
+    await saveWatchSettings({ state: 'watching', lastError: '' })
+    await ensureOffscreen()
+    await appendWatchLog(`已检测到登录（${probe.username || '当前账号'}），继续监视`, 'ok')
+    await refreshBadge()
+    return
+  }
+
   if (settings.state !== 'watching') return
 
   if (!(await hasOffscreen())) {
@@ -188,9 +248,36 @@ chrome.runtime.onInstalled.addListener(() => {
   void watchdog()
 })
 
+/**
+ * 关浏览器 / 关掉所有窗口就等于停止监视：下次不能自动接着跑，
+ * 否则用户以为早关了，实际一开机就在往上传。
+ */
+async function stopWatching(message: string, log: string): Promise<void> {
+  const settings = await getWatchSettings()
+  if (settings.state !== 'watching' && settings.state !== 'waiting-login') return
+
+  await closeOffscreen()
+  await saveWatchSettings({ state: 'paused', lastError: '' })
+  await saveWatchStatus({ state: 'paused', message })
+  await appendWatchLog(log, 'dim')
+  await refreshBadge()
+}
+
+async function stopIfNoWindows(): Promise<void> {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] })
+  if (windows.length > 0) return
+  await stopWatching('所有窗口已关闭，监视已停止', '所有窗口已关闭，监视已停止')
+}
+
 chrome.runtime.onStartup.addListener(() => {
   void ensureWatchdog()
-  void watchdog()
+  void stopWatching('浏览器重启后监视已停止，点「开始监视」继续', '浏览器重启，监视已停止').then(
+    () => watchdog(),
+  )
+})
+
+chrome.windows.onRemoved.addListener(() => {
+  void stopIfNoWindows()
 })
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -239,6 +326,11 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
         .sendMessage({ type: 'WATCH_TICK' })
         .catch(() => undefined)
         .then(() => sendResponse({ ok: true }))
+      return true
+    case 'WATCH_PRECHECK':
+      void probeLogin()
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
       return true
     case 'WATCH_DIAG':
       void Promise.all([hasOffscreen(), chrome.alarms.get(WATCHDOG_ALARM), pingOffscreen()])

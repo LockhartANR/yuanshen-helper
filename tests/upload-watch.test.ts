@@ -57,12 +57,19 @@ function options(overrides: Partial<Parameters<typeof scanDirectory>[2]> = {}) {
 }
 
 describe('scanDirectory', () => {
-  it('records a new file as seen without queueing it yet', async () => {
-    const { dir } = makeDir({ 'a.evf': { size: 100, mtime: NOW - 60_000 } })
+  it('records a freshly written file as seen and waits for the next round', async () => {
+    const { dir } = makeDir({ 'a.evf': { size: 100, mtime: NOW - 1000 } })
     const result = await scanDirectory(dir, new Map(), options())
 
     expect(result.updates).toHaveLength(1)
     expect(result.updates[0]).toMatchObject({ relPath: 'a.evf', size: 100, status: 'seen' })
+  })
+
+  it('queues a file that is already stable when first seen', async () => {
+    const { dir } = makeDir({ 'a.evf': { size: 100, mtime: NOW - 60_000 } })
+    const result = await scanDirectory(dir, new Map(), options())
+
+    expect(result.updates[0]).toMatchObject({ relPath: 'a.evf', status: 'queued' })
   })
 
   it('queues a seen file once its size and mtime stop changing', async () => {

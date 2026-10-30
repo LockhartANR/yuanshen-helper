@@ -29,16 +29,15 @@ const STATE_LABEL: Record<WatchState, string> = {
   watching: '监视中',
   paused: '已暂停',
   'needs-permission': '需要重新授权',
+  'waiting-login': '等待登录',
   stopped: '已停止',
 }
 
-async function post(
+async function post<T = { ok?: boolean; error?: string }>(
   message: Record<string, unknown>,
-): Promise<{ ok?: boolean; error?: string } | undefined> {
+): Promise<T | undefined> {
   try {
-    return (await chrome.runtime.sendMessage(message)) as
-      | { ok?: boolean; error?: string }
-      | undefined
+    return (await chrome.runtime.sendMessage(message)) as T
   } catch {
     // 后台没起来时消息会失败，状态由下一次 watchdog 纠正
     return undefined
@@ -218,6 +217,73 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   actions.append(startButton, pauseButton, scanButton, retryButton, clearButton)
   runCard.append(stateLine, counterLine, statusNote, actions)
 
+  // ---------------- 什么时候会停 ----------------
+  const rulesCard = el('section', 'card rules')
+  rulesCard.append(
+    el('h2', undefined, '什么时候会停'),
+    el('p', 'desc', '监视开着时，下面这些操作不会中断它，可以放心关。'),
+  )
+
+  const keepList = el('ul', 'rule-list')
+  keepList.append(
+    el('li', undefined, '关掉这个页面——它只是界面，扫目录和上传都在后台跑'),
+    el('li', undefined, '关掉 openms.top 标签页——下次上传会自动重开一个后台标签页，这一条会多等几秒'),
+    el('li', undefined, '切换标签页、最小化窗口、电脑睡眠——睡眠时不扫，唤醒后继续'),
+    el('li', undefined, '网络或站点临时出错——逐条退避重试，不停'),
+  )
+
+  const stopList = el('ul', 'rule-list')
+  stopList.append(
+    el('li', undefined, '关闭所有浏览器窗口、退出或重启浏览器——重启后不会自动开始，需要重新点「开始监视」'),
+    el('li', undefined, '点「暂停」、「清空台账」，或者重新选择目录'),
+    el('li', undefined, '录像目录被删除或移动——需要重新选择目录'),
+    el('li', undefined, '目录读取权限被撤销——需要重新授权'),
+    el('li', undefined, '账号问题：录像额度满、未实名、被封禁、标识违规——处理完再手动开始'),
+  )
+
+  const autoList = el('ul', 'rule-list')
+  autoList.append(
+    el('li', undefined, '登录失效——进入「等待登录」，重新登录后自动继续，不用手动点'),
+  )
+
+  rulesCard.append(
+    el('h3', undefined, '不会停'),
+    keepList,
+    el('h3', undefined, '会停，需要手动重新开始'),
+    stopList,
+    el('h3', undefined, '会自动恢复的暂停'),
+    autoList,
+  )
+
+  // ---------------- 未登录弹窗 ----------------
+  const loginDialog = document.createElement('dialog')
+  loginDialog.className = 'login-dialog'
+  loginDialog.setAttribute('aria-labelledby', 'login-dialog-title')
+  const dialogTitle = el('h2', undefined, '还没有登录 openms.top')
+  dialogTitle.id = 'login-dialog-title'
+  const dialogBody = el('p', 'desc')
+  const dialogActions = el('div', 'actions')
+  const dialogLogin = el('button', 'button primary', '去登录') as HTMLButtonElement
+  const dialogClose = el('button', 'button', '稍后') as HTMLButtonElement
+  dialogLogin.type = 'button'
+  dialogClose.type = 'button'
+  dialogLogin.addEventListener('click', () => {
+    void chrome.tabs.create({ url: 'https://openms.top/' })
+    loginDialog.close()
+  })
+  dialogClose.addEventListener('click', () => loginDialog.close())
+  dialogActions.append(dialogLogin, dialogClose)
+  loginDialog.append(dialogTitle, dialogBody, dialogActions)
+  document.body.append(loginDialog)
+
+  function showLoginDialog(expired: boolean): void {
+    dialogTitle.textContent = expired ? '登录已失效' : '还没有登录 openms.top'
+    dialogBody.textContent = expired
+      ? '自动上传已暂停。重新登录后会自动继续，不需要再点「开始监视」。'
+      : '自动上传要复用站点登录态。请先在 openms.top 登录，回来再点「开始监视」。'
+    if (!loginDialog.open) loginDialog.showModal()
+  }
+
   // ---------------- 诊断 ----------------
   const diagCard = el('section', 'card')
   diagCard.append(
@@ -246,11 +312,12 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   const logList = el('div', 'logs')
   logCard.append(logHead, logList)
 
-  page.append(header, dirCard, settingsCard, runCard, diagCard, logCard)
+  page.append(header, dirCard, settingsCard, runCard, rulesCard, diagCard, logCard)
   root.append(page)
 
   render()
   void refreshDiag()
+  if (settings.state === 'waiting-login') showLoginDialog(true)
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
@@ -334,10 +401,22 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
       const granted = await grantAccess()
       if (!granted) return
     }
+
+    const precheck = await post<{ ok?: boolean; loggedIn?: boolean | null; username?: string }>({
+      type: 'WATCH_PRECHECK',
+    })
+    if (precheck?.ok && precheck.loggedIn === false) {
+      const expired = settings.state === 'waiting-login'
+      settings = await saveWatchSettings({ state: 'paused', lastError: '' })
+      notice('还没有登录 openms.top，登录后再点「开始监视」')
+      showLoginDialog(expired)
+      return
+    }
+
     settings = await saveWatchSettings({ state: 'watching', dirName: handle.name, lastError: '' })
-    const response = (await post({ type: 'WATCH_START' })) as
-      | { ok?: boolean; responsive?: boolean; error?: string }
-      | undefined
+    const response = await post<{ ok?: boolean; responsive?: boolean; error?: string }>({
+      type: 'WATCH_START',
+    })
     if (response && response.ok === false) {
       settings = await saveWatchSettings({ state: 'paused' })
       notice(`启动失败：${response.error ?? '后台拒绝创建任务'}`)
@@ -379,23 +458,23 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   }
 
   async function refreshDiag(): Promise<void> {
-    try {
-      const response = (await chrome.runtime.sendMessage({ type: 'WATCH_DIAG' })) as
-        | { ok?: boolean; offscreen?: boolean; alarm?: boolean; responsive?: boolean; error?: string }
-        | undefined
-      if (!response?.ok) {
-        diagBackend.textContent = `后台无响应：${response?.error ?? '未知原因'}`
-        return
-      }
-      const backend = response.offscreen
-        ? response.responsive
-          ? '运行中（脚本已响应）'
-          : '运行中（脚本无响应）'
-        : '未运行'
-      diagBackend.textContent = `后台：${backend} · 看门狗：${response.alarm ? '已注册' : '未注册'}`
-    } catch (error) {
-      diagBackend.textContent = `后台无响应：${errorMessage(error)}`
+    const response = await post<{
+      ok?: boolean
+      offscreen?: boolean
+      alarm?: boolean
+      responsive?: boolean
+      error?: string
+    }>({ type: 'WATCH_DIAG' })
+    if (!response?.ok) {
+      diagBackend.textContent = `后台无响应：${response?.error ?? '没有收到回复'}`
+      return
     }
+    const backend = response.offscreen
+      ? response.responsive
+        ? '运行中（脚本已响应）'
+        : '运行中（脚本无响应）'
+      : '未运行'
+    diagBackend.textContent = `后台：${backend} · 看门狗：${response.alarm ? '已注册' : '未注册'}`
   }
 
   async function previewScan(): Promise<void> {
@@ -442,7 +521,7 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
     else if (permission === 'granted') permNote.textContent = '目录读取权限已授予。'
     else if (permission === 'denied')
       permNote.textContent = '目录读取权限被拒绝，请在浏览器设置里恢复，或重新选择目录。'
-    else permNote.textContent = '浏览器重启后需要点一次「重新授权」，这是浏览器的限制。'
+    else permNote.textContent = '浏览器重启后监视会停止，需要重新点「开始监视」并授权一次目录。'
 
     for (const [value, input] of Object.entries(modeInputs)) {
       input.checked = settings.mode === value

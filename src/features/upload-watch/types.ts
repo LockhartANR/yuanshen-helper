@@ -1,6 +1,12 @@
 export type WatchMode = 'backfill' | 'new-only'
 
-export type WatchState = 'idle' | 'watching' | 'paused' | 'needs-permission' | 'stopped'
+export type WatchState =
+  | 'idle'
+  | 'watching'
+  | 'paused'
+  | 'needs-permission'
+  | 'waiting-login'
+  | 'stopped'
 
 export interface WatchSettings {
   /** backfill：启动时补传目录里已有的录像；new-only：只传启动之后出现的 */

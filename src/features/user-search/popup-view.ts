@@ -93,9 +93,25 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
 
   void getWatchSettings()
     .then((watch) => {
-      if (watch.state !== 'needs-permission') return
-      uploadButton.classList.add('needs-attention')
-      uploadButton.title = '自动上传需要重新授权'
+      if (watch.state === 'watching') {
+        uploadButton.classList.add('is-running')
+        uploadButton.title = '自动上传 · 监视中'
+        return
+      }
+      if (watch.state === 'waiting-login') {
+        uploadButton.classList.add('needs-attention')
+        uploadButton.title = '自动上传 · 等待登录'
+        return
+      }
+      if (watch.state === 'needs-permission') {
+        uploadButton.classList.add('needs-attention')
+        uploadButton.title = '自动上传 · 需要重新授权'
+        return
+      }
+      if (watch.state === 'stopped') {
+        uploadButton.classList.add('is-stopped')
+        uploadButton.title = '自动上传 · 已停止'
+      }
     })
     .catch(() => undefined)
 

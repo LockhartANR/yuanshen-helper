@@ -27,3 +27,53 @@
 .setting-row .mono {
   overflow-wrap: anywhere;
 }
+
+.login-dialog {
+  width: min(380px, calc(100vw - 32px));
+  padding: 20px 20px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 24px 60px rgb(15 23 42 / 24%);
+}
+
+.login-dialog::backdrop {
+  background: rgb(15 23 42 / 45%);
+}
+
+.login-dialog h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.login-dialog .desc {
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+
+.login-dialog .actions {
+  justify-content: flex-end;
+}
+
+.rules h2 {
+  margin-bottom: 4px;
+}
+
+.rules h3 {
+  margin: 14px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.rule-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  line-height: 1.8;
+}
+
+.rule-list li {
+  margin: 0;
+}

@@ -50,6 +50,16 @@ body {
   display: block;
 }
 
+.icon-button.upload-entry.is-running::after {
+  display: block;
+  background: #16a34a;
+}
+
+.icon-button.upload-entry.is-stopped::after {
+  display: block;
+  background: #dc2626;
+}
+
 .brand {
   display: flex;
   flex: 1;

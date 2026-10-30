@@ -77,12 +77,15 @@ async function publish(
   })
 }
 
-async function halt(state: 'needs-permission' | 'stopped', message: string): Promise<void> {
+async function halt(
+  state: 'needs-permission' | 'stopped' | 'waiting-login',
+  message: string,
+): Promise<void> {
   stopped = true
   clearTimeout(timer)
   settings = await saveWatchSettings({ state, lastError: message })
   await saveWatchStatus({ state, dirName: settings.dirName, message })
-  await appendWatchLog(message, state === 'stopped' ? 'err' : 'warn')
+  await appendWatchLog(message, state === 'needs-permission' ? 'warn' : 'err')
   void chrome.runtime.sendMessage({ type: 'WATCH_IDLE' }).catch(() => undefined)
 }
 
@@ -205,7 +208,10 @@ async function tick(): Promise<void> {
     })
 
     if (result.fatal) {
-      await halt('stopped', result.fatal.reason)
+      await halt(
+        result.fatal.kind === 'auth' ? 'waiting-login' : 'stopped',
+        result.fatal.reason,
+      )
       return
     }
 
@@ -218,6 +224,10 @@ async function tick(): Promise<void> {
   } catch (error) {
     if (error instanceof DOMException && error.name === 'NotAllowedError') {
       await halt('needs-permission', '目录读取权限失效，请重新授权')
+      return
+    }
+    if (error instanceof DOMException && error.name === 'NotFoundError') {
+      await halt('needs-permission', '目录不存在或已被移动，请重新选择目录')
       return
     }
     await appendWatchLog(errorMessage(error), 'err')

@@ -167,10 +167,22 @@ export async function scanDirectory(
       break
     }
 
-    const file = await (await resolveFile(dir, relPath)).getFile()
+    let file: Awaited<ReturnType<FileHandleLike['getFile']>>
+    try {
+      file = await (await resolveFile(dir, relPath)).getFile()
+    } catch (error) {
+      // 列目录到读取之间文件被删掉了，下一轮自然不会再出现，跳过即可
+      if (error instanceof DOMException && error.name === 'NotFoundError') continue
+      throw error
+    }
 
     if (!existing) {
-      updates.push(createEntry(relPath, file.size, file.lastModified, 'seen', opts.now))
+      // 第一次看到时文件已经静置超过 stabilityMs，说明早就写完了，直接入队；
+      // 否则先记成 seen，等下一轮确认大小没再变。
+      const stable = opts.now - file.lastModified > opts.stabilityMs
+      updates.push(
+        createEntry(relPath, file.size, file.lastModified, stable ? 'queued' : 'seen', opts.now),
+      )
       continue
     }
     if (existing.size !== file.size || existing.mtime !== file.lastModified) {
@@ -203,7 +215,14 @@ export async function baselineDirectory(
       rows.push(createEntry(relPath, 0, 0, 'ignored', opts.now))
       continue
     }
-    const file = await (await resolveFile(dir, relPath)).getFile()
+    let file: Awaited<ReturnType<FileHandleLike['getFile']>>
+    try {
+      file = await (await resolveFile(dir, relPath)).getFile()
+    } catch (error) {
+      // 列目录到读取之间文件被删掉了，下一轮自然不会再出现，跳过即可
+      if (error instanceof DOMException && error.name === 'NotFoundError') continue
+      throw error
+    }
     rows.push(createEntry(relPath, file.size, file.lastModified, 'queued', opts.now))
   }
   return rows
