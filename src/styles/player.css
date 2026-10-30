@@ -243,6 +243,14 @@ body {
   overflow: hidden;
 }
 
+.pb-cell.colored .pb-link {
+  color: inherit;
+}
+
+.pb-cell.colored:hover {
+  filter: brightness(1.06);
+}
+
 .pb-cell:hover {
   background: var(--hover);
 }

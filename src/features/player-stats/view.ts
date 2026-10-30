@@ -5,6 +5,7 @@ import { askSelfId, resolveSelfId } from '../../shared/self-id'
 import { el, errorMessage, externalLink, isAbortError } from '../../shared/ui'
 import { fetchUserInfo } from './api'
 import { computePb, computeTop5, eligible, bvsOf, joinVideos, markDuplicates, stnbOf } from './compute'
+import { pbColorStyle } from './colors'
 import type { Level, Top5Group, TopStat, Video } from './model'
 import { LEVELS, softwareLabel } from './model'
 import { ensureDetails, loadPlayer } from './service'
@@ -282,18 +283,26 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     renderTop(current)
   }
 
-  function pbValue(video: Video): string {
-    if (state.pbStat === 'time') return formatSeconds(video.timems)
-    if (state.pbStat === 'bvs') return bvsOf(video).toFixed(3)
-    return stnbOf(video).toFixed(3)
+  function pbMetric(video: Video): number {
+    if (state.pbStat === 'time') return video.timems / 1000
+    if (state.pbStat === 'bvs') return bvsOf(video)
+    return stnbOf(video)
   }
 
   function pbCell(row: ReturnType<typeof computePb>[number] | undefined): HTMLElement {
     const cell = el('span', 'pb-cell')
     if (!row) return cell
 
+    const metric = pbMetric(row.video)
+    const style = pbColorStyle(row.level, state.pbStat, metric)
+    if (style) {
+      cell.classList.add('colored')
+      cell.style.backgroundColor = style.backgroundColor
+      cell.style.color = style.color
+    }
+
     const link = videoLink(row.video.id)
-    link.textContent = pbValue(row.video)
+    link.textContent = metric.toFixed(3)
     link.className = 'pb-link'
     cell.append(link)
 

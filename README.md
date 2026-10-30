@@ -6,7 +6,7 @@
 
 为 [开源扫雷网（openms.top）](https://openms.top) 提供辅助功能的 Chrome 扩展。
 
-当前版本 **0.3.0**。提供站内用户搜索（用户名、实名、英文名、拼音、数字 ID、扫雷标识）、录像自动上传（监视本地录像目录，按周期把新录像传到站点）和玩家录像数据（PB 表与前端成绩）。所有数据只保存在本机，不上传任何服务器。
+当前版本 **0.3.1**。提供站内用户搜索（用户名、实名、英文名、拼音、数字 ID、扫雷标识）、录像自动上传（监视本地录像目录，按周期把新录像传到站点）和玩家录像数据（PB 表与前端成绩）。所有数据只保存在本机，不上传任何服务器。
 
 ## 功能
 
@@ -159,7 +159,7 @@ npm run build
 ```bash
 npm ci
 npm run typecheck   # TypeScript 类型检查
-npm test            # 77 个单元 / 集成测试
+npm test            # 81 个单元 / 集成测试
 npm run build       # 产物输出到 dist/
 npm run watch       # 持续构建；改完在 chrome://extensions 重新加载
 ```
@@ -206,7 +206,7 @@ src/
 │       └── view.ts               # 玩家数据页 UI
 ├── shared/                       # 数据库连接、设置、日志、格式化、图标、玩家 ID、小工具
 └── styles/                       # 基础 / popup / options / upload / player 样式
-tests/                            # 77 个测试（全部使用合成数据）
+tests/                            # 81 个测试（全部使用合成数据）
 ```
 
 图标源文件在 `assets/icon-source.webp`，可用以下命令重新生成：
