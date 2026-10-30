@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "元神助手",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "开源扫雷网（openms.top）辅助工具：站内用户搜索、标识反查（默认关闭）、录像自动上传，数据仅存本地。",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "alarms", "offscreen"],

@@ -105,31 +105,32 @@ content script（openms.top，同源）
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `intervalSec` | 10 | 5–300，运行中可改（改完重建定时器） |
-| 单轮扫描预算 | 15 秒 | 超时保留游标，下一轮继续 |
-| 单轮入队上限 | 200 | 防止首次补传一次塞满队列 |
+| `intervalSec` | 10 | 5–300，运行中可改（下一轮扫描生效） |
+| 单轮最多 stat | 5000 | 只对真正需要读取的文件计数，避免台账变大后空转 |
 | 上传并发 | 1 | 队列串行 |
+| 每批上传 | 20 | 一批做完立刻接着下一批，队列空才停 |
 | 上传间隔 | 300ms | 站点限流 5/s，留余量 |
 | 单文件重试 | 5 次 | 退避 1/2/4/8/16 秒 |
 
-扫描与上传是**两个独立循环**：扫描只负责入队，上传按自己的节奏消费。这样 10 秒扫描不会被一批大上传拖住，也不会因为上传卡住而错过新文件。
+扫描与上传是**两个独立循环**：扫描只负责入队，上传按自己的节奏连续消费。扫描再慢也不会把上传卡住，上传再多也不会错过下一轮扫描。
 
 ## 6. 扫描与 diff
 
 ```ts
-async function scanOnce(cursor?: string) {
+async function scanOnce() {
   const entries = [];                       // 只收文件名，不读内容
   for await (const h of dir.values()) {
     if (h.kind !== 'file') continue;        // 子目录默认忽略
     if (!matchExt(h.name)) continue;        // .evf 等
     if (skipFail && isFailName(h.name)) continue;
     entries.push(h.name);
-    if (entries.length >= 200) break;       // 本轮上限，游标续
   }
 
+  let processed = 0;                        // 只有需要 stat 的文件才计数
   for (const name of entries) {
     const e = ledger.get(name);
     if (e && e.status !== 'seen') continue; // 已处理过，连 stat 都不做
+    if (++processed > 5000) break;          // 单轮上限，剩下的下轮继续
     const file = await dir.getFileHandle(name).then(h => h.getFile());
     // 第一次看到时文件已经静置超过 3 秒，说明早写完了，直接入队
     if (!e) {
@@ -205,7 +206,7 @@ const resp = await fetch('/common/uploadvideo/', {method: 'POST', body: fd, cred
 | 文件过大 | `413` | 标 `failed` |
 | 限流 | `429` | 读 `Retry-After`，退避重试 |
 | 榜单刷新中 | `503` | 读 `Retry-After`（通常 1s），重试该文件 |
-| 其他 5xx | `5xx` | 退避重试，连续 3 条失败暂停整批 |
+| 其他 5xx | `5xx` | 逐条退避重试，5 次后记失败；不整批停 |
 
 三个必须记住的坑：`collision` 是 200 里的 error 不是 409；未实名那条用的是 `obj` 而不是 `object`；`identifier` 只判 `object` 不够，还要看 `category`。
 
@@ -250,14 +251,11 @@ interface WatchFile {
   relPath: string;
   size: number;
   mtime: number;
-  status: 'seen' | 'queued' | 'uploading' | 'done' | 'skipped' | 'ignored' | 'failed';
+  status: 'seen' | 'queued' | 'done' | 'skipped' | 'ignored' | 'failed';
   firstSeenAt: number;
-  doneAt?: number;
   attempts: number;
-  nextAttemptAt?: number;
-  siteId?: number;
-  state?: 'c' | 'a' | 'b' | 'd' | 'e';
-  reason?: string;
+  nextAttemptAt: number;
+  reason: string;
 }
 ```
 
@@ -351,7 +349,7 @@ host 权限已有，不用改。
 | 项 | 实现 |
 |---|---|
 | 传输 | 录像字节 base64 后经消息传给内容脚本（`chrome.runtime.sendMessage` 是 JSON 序列化，不能直接传 ArrayBuffer） |
-| 调度 | offscreen 内 `setTimeout` 链；`chrome.alarms` 60 秒看门狗负责拉起与重建，未做 30 秒降级分支 |
+| 调度 | 扫描与上传是**两个独立循环**：扫描按间隔跑，上传连续消费队列（每批 20 条、条间 300ms），扫描不再阻塞上传；`chrome.alarms` 60 秒看门狗负责拉起与重建，未做 30 秒降级分支 |
 | **offscreen 的 API 面** | **实测 offscreen 文档里 `chrome.storage` 是 `undefined`（只有 `chrome.runtime`）**，设置 / 状态 / 日志全部改由 SW 代读写（`bridge.ts`）。第一版直接调 `chrome.storage`，表现为后台静默不干活 |
 | 权限 | offscreen 里 `queryPermission()` 可能返回 `prompt`，不直接停；只有真的抛 `NotAllowedError` 才转 `needs-permission` |
 | 扫描预算 | 只把真正需要 `getFile()` 的文件计入 `maxEntries`，避免台账变大后每轮在已处理文件上打转 |
