@@ -4,6 +4,7 @@ import { icon } from '../../shared/icons'
 import { addLog } from '../../shared/log'
 import { getSettings, saveSettings, type Settings } from '../../shared/settings'
 import { onDataChanged } from '../../shared/bus'
+import { getWatchSettings } from '../upload-watch/settings'
 import {
   debounce,
   el,
@@ -76,7 +77,27 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   optionsButton.setAttribute('aria-label', '打开设置')
   optionsButton.append(icon('settings'))
   optionsButton.addEventListener('click', () => openOptionsPage())
-  header.append(brand, optionsButton)
+
+  const uploadButton = el('button', 'icon-button upload-entry')
+  uploadButton.type = 'button'
+  uploadButton.title = '自动上传'
+  uploadButton.setAttribute('aria-label', '打开自动上传')
+  uploadButton.append(icon('upload'))
+  uploadButton.addEventListener('click', () => {
+    void chrome.tabs.create({ url: chrome.runtime.getURL('upload.html') })
+  })
+
+  const headerActions = el('div', 'header-actions')
+  headerActions.append(uploadButton, optionsButton)
+  header.append(brand, headerActions)
+
+  void getWatchSettings()
+    .then((watch) => {
+      if (watch.state !== 'needs-permission') return
+      uploadButton.classList.add('needs-attention')
+      uploadButton.title = '自动上传需要重新授权'
+    })
+    .catch(() => undefined)
 
   const searchBox = el('div', 'search-box')
   searchBox.append(icon('search'))

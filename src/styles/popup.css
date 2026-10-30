@@ -20,6 +20,36 @@ body {
   background: var(--surface);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.icon-button.upload-entry {
+  position: relative;
+}
+
+.icon-button.upload-entry::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d97706;
+}
+
+.icon-button.upload-entry.needs-attention {
+  color: #d97706;
+}
+
+.icon-button.upload-entry.needs-attention::after {
+  display: block;
+}
+
 .brand {
   display: flex;
   flex: 1;

@@ -18,16 +18,19 @@
   gap: 12px;
 }
 
+.header-links {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .logo {
-  display: grid;
-  place-items: center;
+  display: block;
+  flex: none;
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #1d4ed8, #7c3aed);
-  color: #fff;
-  font-size: 24px;
-  font-weight: 700;
+  object-fit: cover;
 }
 
 .page-header h1 {

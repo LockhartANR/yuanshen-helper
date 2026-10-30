@@ -7,7 +7,7 @@ import {
   saveSettings,
   type Settings,
 } from '../../shared/settings'
-import { el, errorMessage } from '../../shared/ui'
+import { brandLogo, el, errorMessage } from '../../shared/ui'
 import {
   DEFAULT_SYNC_META,
   clearAllData,
@@ -40,7 +40,7 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
 
   const header = el('header', 'page-header')
   const brand = el('div', 'page-brand')
-  const logo = el('div', 'logo', '元')
+  const logo = brandLogo()
   const titles = el('div')
   titles.append(el('h1', undefined, '元神助手'), el('p', undefined, '开源扫雷网辅助工具 · 控制台'))
   brand.append(logo, titles)
@@ -48,7 +48,13 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   siteLink.href = 'https://openms.top'
   siteLink.target = '_blank'
   siteLink.rel = 'noreferrer'
-  header.append(brand, siteLink)
+  const uploadLink = el('a', 'site-link', '自动上传 ↗') as HTMLAnchorElement
+  uploadLink.href = chrome.runtime.getURL('upload.html')
+  uploadLink.target = '_blank'
+  uploadLink.rel = 'noreferrer'
+  const links = el('div', 'header-links')
+  links.append(uploadLink, siteLink)
+  header.append(brand, links)
 
   const featureCard = el('section', 'card')
   featureCard.append(

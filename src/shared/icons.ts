@@ -20,7 +20,7 @@ function add(svg: SVGSVGElement, tag: string, attrs: Record<string, string>): vo
   svg.append(node)
 }
 
-export type IconName = 'search' | 'settings' | 'refresh'
+export type IconName = 'search' | 'settings' | 'refresh' | 'upload'
 
 export function icon(name: IconName): SVGSVGElement {
   const svg = makeSvg()
@@ -33,6 +33,10 @@ export function icon(name: IconName): SVGSVGElement {
     add(svg, 'circle', { cx: '9', cy: '7', r: '2.3', fill: 'currentColor', stroke: 'none' })
     add(svg, 'circle', { cx: '15', cy: '12', r: '2.3', fill: 'currentColor', stroke: 'none' })
     add(svg, 'circle', { cx: '7', cy: '17', r: '2.3', fill: 'currentColor', stroke: 'none' })
+  } else if (name === 'upload') {
+    add(svg, 'path', { d: 'M12 16V4' })
+    add(svg, 'path', { d: 'M7.5 8.5 12 4l4.5 4.5' })
+    add(svg, 'path', { d: 'M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3' })
   } else {
     add(svg, 'path', { d: 'M20 11a8 8 0 1 0-2.3 6.3' })
     add(svg, 'path', { d: 'M20 4v7h-7' })
