@@ -1,17 +1,23 @@
 import { SITE_ORIGIN } from '../../shared/constants'
 import type { PlayerVideoRow } from '../../shared/db'
-import { formatCount, formatDateTime } from '../../shared/format'
+import { formatCount, formatDateStamp, formatDateTime } from '../../shared/format'
 import { askSelfId, resolveSelfId } from '../../shared/self-id'
 import { el, errorMessage, externalLink, isAbortError } from '../../shared/ui'
 import { fetchUserInfo } from './api'
 import { computePb, computeTop5, eligible, bvsOf, joinVideos, markDuplicates, stnbOf } from './compute'
 import { pbColorStyle } from './colors'
+import { softwareIcon } from './software-icon'
 import type { Level, Top5Group, TopStat, Video } from './model'
 import { LEVELS, softwareLabel } from './model'
 import { ensureDetails, loadPlayer } from './service'
 
 const LEVEL_LABELS: Record<Level, string> = { b: '初级', i: '中级', e: '高级' }
 const STAT_LABELS: Record<TopStat, string> = { time: '用时', bvs: '3BVS', stnb: 'STNB' }
+
+/** PB 表除了三个指标，还能切到「日期」看每条 PB 的结束日期。 */
+type PbStat = TopStat | 'date'
+const PB_STATS: PbStat[] = ['time', 'bvs', 'stnb', 'date']
+const PB_STAT_LABELS: Record<PbStat, string> = { ...STAT_LABELS, date: '日期' }
 
 const SOFTWARE_OPTIONS: { value: string; label: string }[] = [
   { value: 'all', label: '全部软件' },
@@ -29,7 +35,7 @@ interface UiState {
   nfOnly: boolean
   includeUnapproved: boolean
   showDuplicates: boolean
-  pbStat: TopStat
+  pbStat: PbStat
   updatedAt: number
   fromCache: boolean
   loading: boolean
@@ -164,9 +170,9 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   // ---- PB ----
   const pbTitle = el('h2', 'card-title', 'PB 表')
   const pbTabs = el('div', 'tabs')
-  const pbTabButtons = new Map<TopStat, HTMLButtonElement>()
-  for (const stat of ['time', 'bvs', 'stnb'] as TopStat[]) {
-    const button = el('button', 'tab', STAT_LABELS[stat])
+  const pbTabButtons = new Map<PbStat, HTMLButtonElement>()
+  for (const stat of PB_STATS) {
+    const button = el('button', 'tab', PB_STAT_LABELS[stat])
     button.type = 'button'
     button.addEventListener('click', () => {
       state.pbStat = stat
@@ -273,7 +279,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     cancelButton.classList.toggle('hidden', !state.loading)
     status.textContent = state.message
 
-    for (const stat of ['time', 'bvs', 'stnb'] as TopStat[]) {
+    for (const stat of PB_STATS) {
       const button = pbTabButtons.get(stat)!
       button.classList.toggle('active', state.pbStat === stat)
       button.setAttribute('aria-pressed', String(state.pbStat === stat))
@@ -283,9 +289,9 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     renderTop(current)
   }
 
-  function pbMetric(video: Video): number {
-    if (state.pbStat === 'time') return video.timems / 1000
-    if (state.pbStat === 'bvs') return bvsOf(video)
+  function pbMetric(video: Video, stat: TopStat): number {
+    if (stat === 'time') return video.timems / 1000
+    if (stat === 'bvs') return bvsOf(video)
     return stnbOf(video)
   }
 
@@ -293,17 +299,26 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     const cell = el('span', 'pb-cell')
     if (!row) return cell
 
-    const metric = pbMetric(row.video)
-    const style = pbColorStyle(row.level, state.pbStat, metric)
-    if (style) {
-      cell.classList.add('colored')
-      cell.style.backgroundColor = style.backgroundColor
-      cell.style.color = style.color
+    let text: string
+    if (state.pbStat === 'date') {
+      text = formatDateStamp(row.video.end_time)
+    } else {
+      const metric = pbMetric(row.video, state.pbStat)
+      text = metric.toFixed(3)
+      const style = pbColorStyle(row.level, state.pbStat, metric)
+      if (style) {
+        cell.classList.add('colored')
+        cell.style.backgroundColor = style.backgroundColor
+        cell.style.color = style.color
+      }
     }
 
     const link = videoLink(row.video.id)
-    link.textContent = metric.toFixed(3)
+    link.textContent = text
     link.className = 'pb-link'
+
+    const icon = softwareIcon(row.video.software)
+    if (icon) cell.append(icon)
     cell.append(link)
 
     const tag = duplicateDot(row.video)
@@ -396,6 +411,8 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       link.classList.add('top5-value')
       link.title = `${label} · ${row.video.bv} 3BV`
       const meta = el('span', 'top5-meta', `${row.video.bv} 3BV · ${shortDate(row.video.end_time)}`)
+      const icon = softwareIcon(row.video.software)
+      if (icon) li.append(icon)
       li.append(link, meta)
       list.append(li)
     }

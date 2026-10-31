@@ -240,7 +240,26 @@ body {
 }
 
 .pb-cell {
+  gap: 3px;
   overflow: hidden;
+}
+
+.software-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+.pb-cell .software-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.top5-item .software-icon {
+  width: 12px;
+  height: 12px;
+  align-self: center;
 }
 
 .pb-cell.colored .pb-link {
@@ -281,15 +300,9 @@ body {
 
 .top5-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   padding: 14px 16px 18px;
-}
-
-@media (max-width: 980px) {
-  .top5-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .top5-box {
@@ -327,7 +340,8 @@ body {
 
 .top5-item {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px;
   align-items: baseline;
   white-space: nowrap;
   counter-increment: rank;
