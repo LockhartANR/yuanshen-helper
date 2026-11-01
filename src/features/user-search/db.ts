@@ -68,11 +68,16 @@ export async function setSyncMeta(patch: Partial<SyncMeta>): Promise<SyncMeta> {
 
 export async function clearAllData(): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['users', 'meta', 'identifierCache'], 'readwrite')
+  const tx = db.transaction(
+    ['users', 'meta', 'identifierCache', 'playerVideos', 'playerMeta'],
+    'readwrite',
+  )
   await Promise.all([
     tx.objectStore('users').clear(),
     tx.objectStore('meta').clear(),
     tx.objectStore('identifierCache').clear(),
+    tx.objectStore('playerVideos').clear(),
+    tx.objectStore('playerMeta').clear(),
   ])
   await tx.done
 }

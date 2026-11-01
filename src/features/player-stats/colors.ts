@@ -1,141 +1,148 @@
 import type { Level, TopStat } from './model'
 
-interface ColorScheme {
-  thresholds: number[]
-  colors: string[]
-}
-
 /**
- * 通用色阶：从「没有颜色」到「最好」。
- * 来自配色表，门槛升序，颜色数量 = 门槛数量 + 1。
+ * 原表 `Set!AE2:AE30` 的色板（k=2..30）。
+ * 阈值从 9 递减到 0.01，VBA 的 bt/it/et/bvs/stnb/numcolor 都按这个序列取色。
  */
 const PALETTE = [
-  'rgba(255,255,255,0)',
-  '#808080',
-  '#595959',
-  '#AE78D6',
-  '#7030A0',
-  '#FF5B5B',
-  '#FFA7A7',
-  '#FF0000',
-  '#BC0000',
-  '#92D050',
-  '#B2DE82',
-  '#00B050',
-  '#009242',
-  '#00B0F0',
-  '#81DEFF',
-  '#0070C0',
-  '#005696',
-  '#FFC000',
-  '#FFE07D',
-  '#E7831D',
-  '#A65C12',
-  '#FF57B7',
-  '#FF97D2',
-  '#D6007B',
-  '#A2005D',
-  '#14D2A0',
-  '#7DF3D4',
-  '#0F9D78',
-  '#0B7B5E',
-  '#CCFF66',
+  '#FF6666',
+  '#6699FF',
+  '#FFFF66',
+  '#00CC99',
+  '#00FF99',
+  '#FF9999',
+  '#FF6699',
+  '#FFCCFF',
+  '#FF99FF',
+  '#FFFF66',
+  '#FF9900',
+  '#FFCC99',
+  '#FFCC00',
+  '#0099CC',
+  '#0099FF',
+  '#66FFFF',
+  '#33CCFF',
+  '#00FF99',
+  '#00CC00',
+  '#CCFFCC',
+  '#99CC33',
+  '#CC9900',
+  '#CC6666',
+  '#CCCC00',
+  '#996666',
+  '#CCCCFF',
+  '#FFCCFF',
+  '#CC99FF',
+  '#CCCCCC',
 ]
 
-/** 用时色阶和上面正好相反：最快的是绿色。 */
-const TIME_PALETTE = [...PALETTE].reverse()
-
-const B_TIME_THRESHOLDS = [
-  -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5,
-  1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5,
-  6, 6.5, 7, 7.5, 8, 9, 10, 11, 11.98,
+export const DEFAULT_COLOR_THRESHOLDS = [
+  9, 8.5, 8, 7.5, 7, 6.75, 6.5, 6.25, 6, 5.75,
+  5.5, 5.25, 5, 4.75, 4.5, 4.25, 4, 3.75, 3.5, 3.25,
+  3, 2.75, 2.5, 2.25, 2, 1.5, 1, 0.5, 0.01,
 ]
 
-const I_TIME_THRESHOLDS = [
-  -2, -1, 0, 1, 2, 3, 4, 5, 6, 7,
-  8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
-  18, 19, 20, 21, 22, 24, 26, 28, 29.96,
-]
+let activeValues = [...DEFAULT_COLOR_THRESHOLDS]
 
-const E_TIME_THRESHOLDS = [
-  10, 12.5, 15, 17.5, 20, 22.5, 25, 27.5, 30, 32.5,
-  35, 37.5, 40, 42.5, 45, 47.5, 50, 52.5, 55, 57.5,
-  60, 62.5, 65, 67.5, 70, 75, 80, 85, 89.9,
-]
-
-const BVS_THRESHOLDS = [
-  0.01, 0.5, 1, 1.5, 2, 2.25, 2.5, 2.75, 3, 3.25,
-  3.5, 3.75, 4, 4.25, 4.5, 4.75, 5, 5.25, 5.5, 5.75,
-  6, 6.25, 6.5, 6.75, 7, 7.25, 7.5, 7.75, 8,
-]
-
-const STNB_THRESHOLDS = [
-  0.25, 12.5, 25, 37.5, 50, 56.25, 62.5, 68.75, 75, 81.25,
-  87.5, 93.75, 100, 106.25, 112.5, 118.75, 125, 131.25, 137.5, 143.75,
-  150, 156.25, 162.5, 168.75, 175, 181.25, 187.5, 193.75, 200,
-]
-
-const TIME_SCHEMES: Record<Level, ColorScheme> = {
-  b: { thresholds: B_TIME_THRESHOLDS, colors: TIME_PALETTE },
-  i: { thresholds: I_TIME_THRESHOLDS, colors: TIME_PALETTE },
-  e: { thresholds: E_TIME_THRESHOLDS, colors: TIME_PALETTE },
+/** 用参数面板里的 29 档阈值覆盖默认色板阈值。 */
+export function configureColors(values: number[]): void {
+  if (values.length !== DEFAULT_COLOR_THRESHOLDS.length) return
+  if (values.some((value) => !Number.isFinite(value) || value <= 0)) return
+  activeValues = [...values]
 }
 
-const BVS_SCHEME: ColorScheme = { thresholds: BVS_THRESHOLDS, colors: PALETTE }
-const STNB_SCHEME: ColorScheme = { thresholds: STNB_THRESHOLDS, colors: PALETTE }
-
-/** 门槛升序：返回 value 落在的区间下标（0 到 thresholds.length）。 */
-function bucketIndex(scheme: ColorScheme, value: number): number {
-  let low = 0
-  let high = scheme.thresholds.length
-  while (low < high) {
-    const mid = (low + high) >> 1
-    if ((scheme.thresholds[mid] as number) < value) low = mid + 1
-    else high = mid
-  }
-  return Math.min(low, scheme.colors.length - 1)
-}
-
-function parseColor(color: string): { r: number; g: number; b: number; a: number } | null {
-  const hex = /^#([0-9a-f]{6})$/i.exec(color)
-  if (hex) {
-    const value = Number.parseInt(hex[1] as string, 16)
-    return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff, a: 1 }
-  }
-  const rgba = /^rgba?\(([^)]+)\)$/i.exec(color)
-  if (rgba) {
-    const parts = (rgba[1] as string).split(',').map((part) => Number(part.trim()))
-    const [r, g, b, a = 1] = parts
-    if ([r, g, b].every((part) => Number.isFinite(part))) {
-      return { r: r as number, g: g as number, b: b as number, a }
-    }
-  }
-  return null
-}
+/** VBA：bt = 12 - 2x，it = 30 - 4x，et = 90 - 10x。 */
+const TIME_BASE: Record<Level, number> = { b: 12, i: 30, e: 90 }
+const TIME_SCALE: Record<Level, number> = { b: 2, i: 4, e: 10 }
 
 /** 和站点一致：按感知亮度选黑字或白字。 */
 function textColorFor(color: string): string {
-  const parsed = parseColor(color)
-  if (!parsed) return '#000000'
-  const brightness = (parsed.r * 299 + parsed.g * 587 + parsed.b * 114) / 1000
+  const match = /^#([0-9a-f]{6})$/i.exec(color)
+  if (!match) return '#000000'
+  const value = Number.parseInt(match[1] as string, 16)
+  const brightness =
+    (((value >> 16) & 0xff) * 299 + ((value >> 8) & 0xff) * 587 + (value & 0xff) * 114) / 1000
   return brightness < 128 ? '#ffffff' : '#000000'
 }
 
+function styleAt(index: number): { backgroundColor: string; color: string } | null {
+  const color = PALETTE[index]
+  if (!color) return null
+  return { backgroundColor: color, color: textColorFor(color) }
+}
+
 /**
- * PB 格子的配色。返回 null 表示这个区间是透明的，保持默认样式。
- * 用时的数值单位是秒，3BVS / STNB 用原值。
+ * PB / 榜单格子的配色。
+ * 返回 null 表示超出色板范围（用时太慢，或 3BVS/STNB 低于最低档），保持默认样式。
  */
 export function pbColorStyle(
   level: Level,
   stat: TopStat,
   value: number,
 ): { backgroundColor: string; color: string } | null {
-  const scheme =
-    stat === 'time' ? TIME_SCHEMES[level] : stat === 'bvs' ? BVS_SCHEME : STNB_SCHEME
-  const color = scheme.colors[bucketIndex(scheme, value)]
-  if (!color) return null
+  if (stat === 'time') {
+    // VBA 从 k=9 开始，阈值 = base - scale * x，取第一个「用时 < 阈值」的档。
+    for (let k = 9; k <= 30; k += 1) {
+      const threshold = TIME_BASE[level] - TIME_SCALE[level] * (activeValues[k - 2] as number)
+      if (value < threshold) return styleAt(k - 2)
+    }
+    return null
+  }
 
-  const parsed = parseColor(color)
-  if (!parsed || parsed.a === 0) return null
+  const factor = stat === 'stnb' ? 25 : 1
+  for (let k = 2; k <= 30; k += 1) {
+    if (value >= (activeValues[k - 2] as number) * factor) return styleAt(k - 2)
+  }
+  return null
+}
+
+/** 原表 numcolor：阈值 × 系数，从高到低取第一个命中的档。 */
+export function numColorStyle(
+  value: number,
+  factor = 1,
+): { backgroundColor: string; color: string } | null {
+  for (let k = 2; k <= 30; k += 1) {
+    if (value >= (activeValues[k - 2] as number) * factor) return styleAt(k - 2)
+  }
+  return null
+}
+
+const DATE_LOW = '#F8696B'
+const DATE_MID = '#FCFCFF'
+const DATE_HIGH = '#5A8AC6'
+
+/** 已排序日期数组的中位数；偶数取中间两值的平均。 */
+export function medianOf(sorted: number[]): number {
+  const middle = Math.floor(sorted.length / 2)
+  if (sorted.length % 2 === 1) return sorted[middle] as number
+  return ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2
+}
+
+function mixColor(from: string, to: string, ratio: number): string {
+  const parse = (hex: string): [number, number, number] => {
+    const value = Number.parseInt(hex.slice(1), 16)
+    return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff]
+  }
+  const [r1, g1, b1] = parse(from)
+  const [r2, g2, b2] = parse(to)
+  const channel = (a: number, b: number): string =>
+    Math.round(a + (b - a) * ratio)
+      .toString(16)
+      .padStart(2, '0')
+  return `#${channel(r1, r2)}${channel(g1, g2)}${channel(b1, b2)}`.toUpperCase()
+}
+
+/** 原表日期列的色阶：最早红、50% 白、最新蓝。 */
+export function dateColorStyle(
+  value: number,
+  min: number,
+  mid: number,
+  max: number,
+): { backgroundColor: string; color: string } | null {
+  if (value <= 0 || max <= min) return null
+  const color =
+    value <= mid
+      ? mixColor(DATE_LOW, DATE_MID, (value - min) / Math.max(1, mid - min))
+      : mixColor(DATE_MID, DATE_HIGH, (value - mid) / Math.max(1, max - mid))
   return { backgroundColor: color, color: textColorFor(color) }
 }

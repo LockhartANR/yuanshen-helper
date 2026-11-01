@@ -1,11 +1,13 @@
 import { SITE_ORIGIN } from '../../shared/constants'
 import type { PlayerVideoRow } from '../../shared/db'
-import { formatCount, formatDateStamp, formatDateTime } from '../../shared/format'
+import { formatCount, formatDateTime, formatShortDate } from '../../shared/format'
 import { askSelfId, resolveSelfId } from '../../shared/self-id'
 import { el, errorMessage, externalLink, isAbortError } from '../../shared/ui'
 import { fetchUserInfo } from './api'
-import { computePb, computeTop5, eligible, bvsOf, joinVideos, markDuplicates, stnbOf } from './compute'
-import { pbColorStyle } from './colors'
+import { createAnalysisView } from './analysis-view'
+import { loadAnalysisSettings } from './analysis-settings'
+import { computePb, computeTop5, eligible, bvsOf, joinVideos, stnbOf } from './compute'
+import { configureColors, dateColorStyle, medianOf, pbColorStyle } from './colors'
 import { softwareIcon } from './software-icon'
 import type { Level, Top5Group, TopStat, Video } from './model'
 import { LEVELS, softwareLabel } from './model'
@@ -34,7 +36,6 @@ interface UiState {
   software: string
   nfOnly: boolean
   includeUnapproved: boolean
-  showDuplicates: boolean
   pbStat: PbStat
   updatedAt: number
   fromCache: boolean
@@ -57,24 +58,8 @@ function formatEndTime(value: string | null): string {
   return Number.isNaN(time) ? '—' : formatDateTime(time)
 }
 
-function shortDate(value: string | null): string {
-  if (!value) return '—'
-  const time = Date.parse(value)
-  if (Number.isNaN(time)) return '—'
-  const date = new Date(time)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-}
-
 function videoLink(id: number): HTMLAnchorElement {
   return externalLink(`#${id}`, `${SITE_ORIGIN}/#/video/${id}`)
-}
-
-function duplicateDot(video: Video): HTMLElement | null {
-  if (!video.duplicate && !video.suspectDuplicate) return null
-  const dot = el('span', 'pb-dot')
-  dot.title = video.suspectDuplicate ? '疑似重复' : '重复'
-  return dot
 }
 
 export async function mountPlayerStats(root: HTMLElement): Promise<void> {
@@ -83,6 +68,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     root.append(el('div', 'player-error', '链接里缺少合法的用户 ID，例如 player.html?id=16。'))
     return
   }
+  configureColors(loadAnalysisSettings().colorThresholds)
 
   const state: UiState = {
     userId,
@@ -91,7 +77,6 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     software: 'all',
     nfOnly: false,
     includeUnapproved: false,
-    showDuplicates: false,
     pbStat: 'time',
     updatedAt: 0,
     fromCache: false,
@@ -100,6 +85,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   }
 
   let controller: AbortController | null = null
+  let pendingUnapproved = false
 
   // ---- 头部 ----
   const nameNode = el('h1', 'player-name', `#${userId}`)
@@ -150,7 +136,6 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
 
   const nfCheck = checkbox('NF', '只看盲扫（right_ce = 0）')
   const unapprovedCheck = checkbox('含未过审', '把未审核 / 冻结 / 标识不符 / 外部审核的录像也算进来')
-  const duplicatesCheck = checkbox('显示重复', '显示被判定为重复或疑似重复的录像')
 
   const filters = el('section', 'player-filters')
   const softwareField = el('label', 'filter')
@@ -159,9 +144,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   nfLabel.classList.add('filter')
   const unapprovedLabel = unapprovedCheck.node
   unapprovedLabel.classList.add('filter')
-  const duplicatesLabel = duplicatesCheck.node
-  duplicatesLabel.classList.add('filter')
-  filters.append(softwareField, nfLabel, unapprovedLabel, duplicatesLabel)
+  filters.append(softwareField, nfLabel, unapprovedLabel)
 
   const notice = el('p', 'player-notice hidden')
 
@@ -226,16 +209,42 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   }
 
   // ---- 挂载 ----
+  const scoreTab = el('button', 'page-tab active', '成绩概况')
+  scoreTab.type = 'button'
+  const analysisTab = el('button', 'page-tab', '赛博大表')
+  analysisTab.type = 'button'
+  const pageTabs = el('div', 'page-tabs')
+  pageTabs.append(scoreTab, analysisTab)
+
+  const scorePane = el('div', 'player-pane')
+  scorePane.append(filters, notice, status, pbCard, topCard)
+
+  const analysisPane = el('div', 'player-pane hidden')
+  const analysis = createAnalysisView()
+  analysisPane.append(analysis.root)
+
   const wrap = el('main', 'player-page')
-  wrap.append(header, filters, notice, status, pbCard, topCard)
+  wrap.append(header, pageTabs, scorePane, analysisPane)
   root.replaceChildren(wrap)
+
+  function showPage(page: 'score' | 'analysis'): void {
+    const analysisActive = page === 'analysis'
+    scorePane.classList.toggle('hidden', analysisActive)
+    analysisPane.classList.toggle('hidden', !analysisActive)
+    scoreTab.classList.toggle('active', !analysisActive)
+    analysisTab.classList.toggle('active', analysisActive)
+    scoreTab.setAttribute('aria-pressed', String(!analysisActive))
+    analysisTab.setAttribute('aria-pressed', String(analysisActive))
+  }
+
+  scoreTab.addEventListener('click', () => showPage('score'))
+  analysisTab.addEventListener('click', () => showPage('analysis'))
 
   function options() {
     return {
       software: state.software,
       nfOnly: state.nfOnly,
       includeUnapproved: state.includeUnapproved,
-      hideDuplicates: !state.showDuplicates,
     }
   }
 
@@ -250,22 +259,18 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       state.rows.filter((row) => row.detail !== null).map((row) => [row.id, row.detail!]),
     )
     const { videos } = joinVideos(metas, details)
-    markDuplicates(videos)
     state.videos = videos
+    analysis.update(videos)
     render()
   }
 
   function render(): void {
     const current = options()
     const counted = state.videos.filter((video) => eligible(video, current)).length
-    const duplicates = state.videos.filter(
-      (video) => video.duplicate || video.suspectDuplicate,
-    ).length
     const parts = [
       `录像 ${formatCount(state.rows.length)}`,
       `计入 ${formatCount(counted)}`,
     ]
-    if (duplicates > 0) parts.push(`重复 ${formatCount(duplicates)}`)
     parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
     if (state.fromCache) parts.push('（缓存）')
     metaNode.textContent = parts.join(' · ')
@@ -295,13 +300,26 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     return stnbOf(video)
   }
 
-  function pbCell(row: ReturnType<typeof computePb>[number] | undefined): HTMLElement {
+  function pbCell(
+    row: ReturnType<typeof computePb>[number] | undefined,
+    dateRange?: { min: number; mid: number; max: number },
+  ): HTMLElement {
     const cell = el('span', 'pb-cell')
     if (!row) return cell
 
     let text: string
     if (state.pbStat === 'date') {
-      text = formatDateStamp(row.video.end_time)
+      text = formatShortDate(row.video.end_time)
+      const date = Date.parse(row.video.end_time ?? '')
+      const style =
+        dateRange && !Number.isNaN(date)
+          ? dateColorStyle(date, dateRange.min, dateRange.mid, dateRange.max)
+          : null
+      if (style) {
+        cell.classList.add('colored')
+        cell.style.backgroundColor = style.backgroundColor
+        cell.style.color = style.color
+      }
     } else {
       const metric = pbMetric(row.video, state.pbStat)
       text = metric.toFixed(3)
@@ -320,9 +338,6 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     const icon = softwareIcon(row.video.software)
     if (icon) cell.append(icon)
     cell.append(link)
-
-    const tag = duplicateDot(row.video)
-    if (tag) cell.append(tag)
 
     cell.title = [
       `3BV ${row.bv} · ${softwareLabel(row.video.software)}`,
@@ -356,6 +371,18 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       if (list.length === 0) continue
 
       const byBv = new Map(list.map((row) => [row.bv, row]))
+      const dates = list
+        .map((row) => Date.parse(row.video.end_time ?? ''))
+        .filter((date) => !Number.isNaN(date) && date > 0)
+        .sort((a, b) => a - b)
+      const dateRange =
+        dates.length < 2
+          ? undefined
+          : {
+              min: dates[0] as number,
+              mid: medianOf(dates),
+              max: dates[dates.length - 1] as number,
+            }
       const firstRow = Math.floor(list[0]!.bv / 10) * 10
       const lastRow = Math.floor(list[list.length - 1]!.bv / 10) * 10
 
@@ -367,17 +394,20 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       for (let start = firstRow; start <= lastRow; start += 10) {
         view.grid.append(el('span', 'pb-rowlabel', `${start}–${start + 9}`))
         for (let bv = start; bv < start + 10; bv += 1) {
-          view.grid.append(pbCell(byBv.get(bv)))
+          view.grid.append(pbCell(byBv.get(bv), dateRange))
         }
       }
     }
   }
 
   function renderTop(current: ReturnType<typeof options>): void {
-    const groups = computeTop5(state.videos, {
-      includeUnapproved: current.includeUnapproved,
-      hideDuplicates: current.hideDuplicates,
-    })
+    const groups = computeTop5(
+      state.videos,
+      {
+        includeUnapproved: current.includeUnapproved,
+      },
+      loadAnalysisSettings().bvFloors,
+    )
     const index = new Map<string, Top5Group>()
     for (const group of groups) {
       index.set(`${group.nf ? 'nf' : 'std'}:${group.level}:${group.stat}`, group)
@@ -410,7 +440,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       link.textContent = label
       link.classList.add('top5-value')
       link.title = `${label} · ${row.video.bv} 3BV`
-      const meta = el('span', 'top5-meta', `${row.video.bv} 3BV · ${shortDate(row.video.end_time)}`)
+      const meta = el('span', 'top5-meta', `${row.video.bv} 3BV · ${formatShortDate(row.video.end_time)}`)
       const icon = softwareIcon(row.video.software)
       if (icon) li.append(icon)
       li.append(link, meta)
@@ -455,6 +485,10 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       setLoading(false)
     } finally {
       controller = null
+      if (pendingUnapproved && unapprovedCheck.input.checked) {
+        pendingUnapproved = false
+        void loadUnapproved()
+      }
     }
   }
 
@@ -483,17 +517,25 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   }
 
   async function loadUnapproved(): Promise<void> {
+    if (state.loading) {
+      pendingUnapproved = true
+      return
+    }
     const ids = state.rows
       .filter((row) => row.state !== 'c' && !row.ongoing && row.detail === null)
       .map((row) => row.id)
-    if (ids.length === 0) return
+    if (ids.length === 0) {
+      pendingUnapproved = false
+      return
+    }
 
-    controller = new AbortController()
+    const localController = new AbortController()
+    controller = localController
     const previous = state.message
     setLoading(true, `正在补抓未过审录像：0/${Math.ceil(ids.length / 100)} 批`)
     try {
       const result = await ensureDetails(state.userId, state.rows, ids, {
-        signal: controller.signal,
+        signal: localController.signal,
         onProgress: ({ done, total }) => setLoading(true, `正在补抓未过审录像：${done}/${total} 批`),
       })
       state.rows = result.rows
@@ -504,7 +546,11 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       state.message = isAbortError(error) ? '已取消' : errorMessage(error)
       setLoading(false)
     } finally {
-      controller = null
+      if (controller === localController) controller = null
+      if (pendingUnapproved && unapprovedCheck.input.checked) {
+        pendingUnapproved = false
+        void loadUnapproved()
+      }
     }
   }
 
@@ -514,10 +560,6 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   })
   nfCheck.input.addEventListener('change', () => {
     state.nfOnly = nfCheck.input.checked
-    render()
-  })
-  duplicatesCheck.input.addEventListener('change', () => {
-    state.showDuplicates = duplicatesCheck.input.checked
     render()
   })
   unapprovedCheck.input.addEventListener('change', () => {

@@ -32,13 +32,23 @@ async function resolveBase(options: PlayerApiOptions): Promise<string> {
   return settings.apiBase.replace(/\/+$/, '')
 }
 
+let requestQueue: Promise<void> = Promise.resolve()
+
 async function waitGap(minGapMs: number, signal?: AbortSignal): Promise<void> {
-  const wait = lastRequestAt + minGapMs - Date.now()
-  if (wait <= 0) return
+  let release!: () => void
+  const previous = requestQueue
+  requestQueue = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await previous
   try {
-    await sleep(wait, signal)
+    const wait = lastRequestAt + minGapMs - Date.now()
+    if (wait > 0) await sleep(wait, signal)
+    lastRequestAt = Date.now()
   } catch {
     throw new ApiError('aborted', '已取消')
+  } finally {
+    release()
   }
 }
 
@@ -53,17 +63,28 @@ async function requestJson<T>(
     if (options.signal?.aborted) throw new ApiError('aborted', '已取消')
     await waitGap(minGapMs, options.signal)
 
-    lastRequestAt = Date.now()
+    const timeout = AbortSignal.timeout(8000)
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
 
     let response: Response
     try {
       response = await fetch(`${base}${path}`, {
-        signal: options.signal,
+        signal,
         credentials: 'omit',
         cache: 'no-store',
       })
     } catch (error) {
-      if (options.signal?.aborted || isAbortError(error)) {
+      if (options.signal?.aborted) {
+        throw new ApiError('aborted', '已取消')
+      }
+      if (timeout.aborted) {
+        if (attempt < BACKOFF_MS.length) {
+          await sleep(BACKOFF_MS[attempt]!, options.signal)
+          continue
+        }
+        throw new ApiError('network', '请求超时')
+      }
+      if (isAbortError(error)) {
         throw new ApiError('aborted', '已取消')
       }
       if (attempt < BACKOFF_MS.length) {
@@ -139,6 +160,9 @@ function asDetail(value: unknown): VideoDetail | null {
     left_ce: nullableNumber(row.left_ce),
     right_ce: nullableNumber(row.right_ce),
     double_ce: nullableNumber(row.double_ce),
+    path: nullableNumber(row.path),
+    op: nullableNumber(row.op),
+    isl: nullableNumber(row.isl),
   }
 }
 

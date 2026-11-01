@@ -56,14 +56,16 @@ export interface VideoDetail {
   left_ce: number | null
   right_ce: number | null
   double_ce: number | null
+  /** 鼠标路径长度，单位 1/16 格。 */
+  path: number | null
+  /** 开空数 / 岛屿数，来自录像解析。 */
+  op: number | null
+  isl: number | null
 }
 
-/** 列表与明细合并后的记录，`duplicate` 系列字段由 `markDuplicates` 填。 */
+/** 列表与明细合并后的记录。 */
 export interface Video extends VideoMeta, VideoDetail {
   ongoing_tournament: boolean
-  duplicate: boolean
-  duplicateOf: number | null
-  suspectDuplicate: boolean
 }
 
 export interface AnalyzeOptions {
@@ -72,8 +74,6 @@ export interface AnalyzeOptions {
   nfOnly?: boolean
   /** 是否把 `a/b/d/e` 也算进来（默认关，关掉才能和站点对拍）。 */
   includeUnapproved?: boolean
-  /** 隐藏重复与疑似重复（默认关，调用方按界面状态传）。 */
-  hideDuplicates?: boolean
 }
 
 export interface PbRow {

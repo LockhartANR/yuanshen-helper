@@ -6,7 +6,8 @@ export function formatDateTime(timestamp: number): string {
   if (!timestamp) return '从未'
   const date = new Date(timestamp)
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const year = String(date.getFullYear() % 100).padStart(2, '0')
+  return `${year}/${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 export function formatRelativeTime(timestamp: number, now = Date.now()): string {
@@ -23,12 +24,12 @@ export function formatRelativeTime(timestamp: number, now = Date.now()): string 
   return formatDateTime(timestamp)
 }
 
-/** 8 位日期（本地时区）：20250524。缺失或无效返回 —。 */
-export function formatDateStamp(value: string | null): string {
-  if (!value) return '—'
-  const timestamp = Date.parse(value)
-  if (Number.isNaN(timestamp)) return '—'
+/** 统一短日期：YY/M/D（本地时区）。缺失或无效返回 —。 */
+export function formatShortDate(value: string | number | null): string {
+  if (value === null || value === '' || value === 0) return '—'
+  const timestamp = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(timestamp)) return '—'
   const date = new Date(timestamp)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
+  const year = String(date.getFullYear() % 100).padStart(2, '0')
+  return `${year}/${date.getMonth() + 1}/${date.getDate()}`
 }

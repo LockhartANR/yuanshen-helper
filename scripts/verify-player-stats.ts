@@ -12,7 +12,6 @@ import {
   computeTop5,
   iqgOf,
   joinVideos,
-  markDuplicates,
 } from '../src/features/player-stats/compute.ts'
 import { LEVELS, TOP_STATS } from '../src/features/player-stats/model.ts'
 import type {
@@ -228,11 +227,6 @@ async function main(): Promise<void> {
 
   const { details, missing } = await fetchDetails(usable.map((meta) => meta.id))
   const { videos } = joinVideos(usable, details)
-  const duplicates = markDuplicates(videos)
-  const suspects = videos.filter((video) => video.suspectDuplicate).length
-  if (duplicates > 0 || suspects > 0) {
-    console.log(`判重：确定重复 ${duplicates} 条，疑似 ${suspects} 条`)
-  }
 
   const sitePb = await fetchJson<SitePbRecord[]>(`/api/speedranking/pb/player/${userId}`)
   const siteTop = await fetchJson<Record<string, SiteTopRecord>>(`/api/speedranking/top/player/${userId}`)

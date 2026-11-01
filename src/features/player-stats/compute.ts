@@ -98,69 +98,9 @@ export function joinVideos(
       ...meta,
       ...detail,
       ongoing_tournament: meta.ongoing_tournament === true,
-      duplicate: false,
-      duplicateOf: null,
-      suspectDuplicate: false,
     })
   }
   return { videos, missing }
-}
-
-/**
- * 判重键：成绩 + 点击结构。同一局被多次导出时这些值完全一致。
- * `endTime` 为真时带上结束时间，作为「确定重复」；否则是「疑似重复」。
- */
-function fingerprint(video: Video, endTime: boolean): string {
-  const parts = [
-    video.level,
-    video.mode,
-    video.bv,
-    video.timems,
-    video.left,
-    video.right,
-    video.double,
-    video.left_ce,
-    video.right_ce,
-    video.double_ce,
-  ]
-  if (endTime) parts.push(video.end_time ?? '')
-  return parts.join('|')
-}
-
-/** 就地给重复/疑似重复打标；保留上传最早的一条。返回确定重复的条数。 */
-export function markDuplicates(videos: Video[]): number {
-  const ordered = [...videos].sort(
-    (a, b) => uploadTime(a) - uploadTime(b) || a.id - b.id,
-  )
-  const strongSeen = new Map<string, number>()
-  const weakSeen = new Map<string, number>()
-  let duplicates = 0
-
-  for (const video of ordered) {
-    const weak = fingerprint(video, false)
-    const strong = video.end_time === null ? null : fingerprint(video, true)
-
-    if (strong !== null) {
-      const first = strongSeen.get(strong)
-      if (first !== undefined) {
-        video.duplicate = true
-        video.duplicateOf = first
-        duplicates += 1
-        continue
-      }
-      strongSeen.set(strong, video.id)
-    }
-
-    const firstWeak = weakSeen.get(weak)
-    if (firstWeak !== undefined) {
-      video.suspectDuplicate = true
-      video.duplicateOf = firstWeak
-    } else {
-      weakSeen.set(weak, video.id)
-    }
-  }
-
-  return duplicates
 }
 
 /** 是否计入统计。PB 和前端成绩共用，差别只在 3BV 下限。 */
@@ -176,9 +116,6 @@ export function eligible(video: Video, options: AnalyzeOptions = {}): boolean {
     options.software !== 'all' &&
     video.software !== options.software
   ) {
-    return false
-  }
-  if (options.hideDuplicates === true && (video.duplicate || video.suspectDuplicate)) {
     return false
   }
   return true
@@ -203,11 +140,14 @@ export function computePb(videos: Video[], options: AnalyzeOptions = {}): PbRow[
  * 前端成绩：等级 × 指标 × 普通/NF 的前五。
  * 注意这里刻意不接受 `software` 筛选——软件筛选只作用于 PB 表。
  */
-export function computeTop5(videos: Video[], options: AnalyzeOptions = {}): Top5Group[] {
+export function computeTop5(
+  videos: Video[],
+  options: AnalyzeOptions = {},
+  floors: Record<Level, number> = MIN_BV,
+): Top5Group[] {
   const groups: Top5Group[] = []
   const base = {
     includeUnapproved: options.includeUnapproved,
-    hideDuplicates: options.hideDuplicates,
   }
 
   for (const nf of [false, true]) {
@@ -216,7 +156,7 @@ export function computeTop5(videos: Video[], options: AnalyzeOptions = {}): Top5
         (video) =>
           eligible(video, { ...base, nfOnly: nf }) &&
           video.level === level &&
-          (video.bv as number) >= MIN_BV[level],
+          (video.bv as number) >= floors[level],
       )
       for (const stat of TOP_STATS) {
         // time 是越小越好，bvs / stnb 是越大越好，所以两者用不同的比较器。

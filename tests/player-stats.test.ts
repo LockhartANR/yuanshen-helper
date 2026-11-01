@@ -6,7 +6,6 @@ import {
   eligible,
   iqgOf,
   joinVideos,
-  markDuplicates,
   stnbOf,
 } from '../src/features/player-stats/compute'
 import type { Video } from '../src/features/player-stats/model'
@@ -31,9 +30,9 @@ function video(overrides: Partial<Video> = {}): Video {
     left_ce: 10,
     right_ce: 0,
     double_ce: 0,
-    duplicate: false,
-    duplicateOf: null,
-    suspectDuplicate: false,
+    path: 640,
+    op: 2,
+    isl: 3,
     ...overrides,
   }
 }
@@ -79,47 +78,6 @@ describe('计入范围', () => {
     expect(eligible(item, { software: 'e' })).toBe(true)
     expect(eligible(item, { software: 'a' })).toBe(false)
     expect(eligible(item, { software: 'all' })).toBe(true)
-  })
-
-  it('hideDuplicates 同时隐藏确定重复与疑似重复', () => {
-    expect(eligible(video({ duplicate: true }), { hideDuplicates: true })).toBe(false)
-    expect(eligible(video({ suspectDuplicate: true }), { hideDuplicates: true })).toBe(false)
-    expect(eligible(video({ duplicate: true }))).toBe(true)
-  })
-})
-
-describe('判重', () => {
-  it('同一局被传两次时只保留上传更早的一条', () => {
-    const first = video({ id: 1, upload_time: '2025-01-01T00:00:00Z', timems: 1500 })
-    const second = video({ id: 2, upload_time: '2025-02-01T00:00:00Z', timems: 1500 })
-    expect(markDuplicates([second, first])).toBe(1)
-    expect(first.duplicate).toBe(false)
-    expect(second.duplicate).toBe(true)
-    expect(second.duplicateOf).toBe(1)
-  })
-
-  it('成绩相同但点击不同不算重复', () => {
-    const first = video({ id: 1, timems: 1500, left: 12 })
-    const second = video({ id: 2, timems: 1500, left: 13 })
-    expect(markDuplicates([first, second])).toBe(0)
-    expect(second.duplicate).toBe(false)
-    expect(second.suspectDuplicate).toBe(false)
-  })
-
-  it('没有结束时间时降级为疑似重复', () => {
-    const first = video({ id: 1, end_time: null })
-    const second = video({ id: 2, end_time: null })
-    expect(markDuplicates([first, second])).toBe(0)
-    expect(first.suspectDuplicate).toBe(false)
-    expect(second.suspectDuplicate).toBe(true)
-    expect(second.duplicateOf).toBe(1)
-  })
-
-  it('结束时间不同但点击结构一致时算疑似', () => {
-    const first = video({ id: 1, end_time: '2025-01-01T00:00:00Z' })
-    const second = video({ id: 2, end_time: '2025-01-02T00:00:00Z' })
-    expect(markDuplicates([first, second])).toBe(0)
-    expect(second.suspectDuplicate).toBe(true)
   })
 })
 

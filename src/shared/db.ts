@@ -36,11 +36,15 @@ export interface PlayerVideoRow {
   uploadTime: string
   ongoing: boolean
   detail: VideoDetail | null
+  /** 明细缺 path/op/isl，已按部分可用降级缓存，避免反复重拉。 */
+  detailPartial?: boolean
 }
 
 export interface PlayerMeta {
   userId: number
   fetchedAt: number
+  /** 明细字段版本；老缓存没有这一项，需要重拉。 */
+  version?: number
 }
 
 interface YuanshenDB extends DBSchema {

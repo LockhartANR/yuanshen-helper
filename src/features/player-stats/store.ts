@@ -23,7 +23,11 @@ export async function putRows(
   await tx.done
 }
 
-export async function saveFetchedAt(userId: number, fetchedAt = Date.now()): Promise<void> {
+export async function saveFetchedAt(
+  userId: number,
+  fetchedAt = Date.now(),
+  version?: number,
+): Promise<void> {
   const db = await getDb()
-  await db.put('playerMeta', { userId, fetchedAt })
+  await db.put('playerMeta', { userId, fetchedAt, version })
 }
