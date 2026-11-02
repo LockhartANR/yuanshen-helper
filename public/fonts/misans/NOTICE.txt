@@ -1,0 +1,10 @@
+MiSans
+Copyright (c) Xiaomi Inc.
+
+This extension embeds a subset of MiSans (Regular / Medium / Semibold) for its
+own UI text. The font is used under the MiSans font license. See:
+
+https://hyperos.mi.com/font/
+
+Dynamic user names are rendered with the system font stack because arbitrary
+CJK glyphs are not included in the bundled subset.

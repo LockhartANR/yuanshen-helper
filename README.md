@@ -6,7 +6,7 @@
 
 为 [开源扫雷网（openms.top）](https://openms.top) 提供辅助功能的 Chrome 扩展。
 
-当前版本 **1.0.0**。提供站内用户搜索（用户名、实名、英文名、拼音、数字 ID、扫雷标识）、录像自动上传（监视本地录像目录，按周期把新录像传到站点）和玩家录像数据（PB 表、前端成绩与赛博大表）。所有数据只保存在本机，不上传任何服务器。
+当前版本 **1.0.1**。提供站内用户搜索（用户名、实名、英文名、拼音、数字 ID、扫雷标识）、录像自动上传（监视本地录像目录，按周期把新录像传到站点）和玩家录像数据（PB 表、前端成绩与赛博大表）。所有数据只保存在本机，不上传任何服务器。
 
 ## 功能
 
@@ -145,7 +145,7 @@ npm run build
 
 **赛博大表**分七个页签。统计方式来自大表 **ArbiterStatsAuto**，默认参数为大表 **57.8**。原作者主页：[openms.top/#/player/48](https://openms.top/#/player/48)。
 
-- **概览**：定阶（等价 et）、软实力、LSF、近 30 天新纪录、本周 T37、活跃天数、三难度摘要、GC 指标（含按 3BV 分档明细）、活跃日历（12 周热图 + 总对局 / 活跃天数 / 活跃日均 / 最长连续 / 最活跃日）、最近 PB；
+- **概览**：定阶（等价 et）、软实力、LSF、近 30 天新 PB、本周 T37、活跃天数、今日成绩（不受 3BV 下限限制；初中高 FL/NF、Best/Avg Time、3BVS、STNB、Avg 3BV）、三难度摘要、GC 指标（含按 3BV 分档明细）、活跃日历（12 周热图 + 总对局 / 活跃天数 / 活跃日均 / 最长连续 / 最活跃日）、最近 PB；
 - **榜单**：用时 / 3BVS / STNB 的 Top 50，可按难度切，也可切「三难度」各看前 10；
 - **趋势**：周 T37 / B37 / S37 / ppp（含 10/30/99 秒占位补齐；点周行展开双列瀑布布局的三级槽位明细、总计 / 平均和 T.37 / B.37 / S.37 / BPP / IPP / EPP / PPP37）、月均明细（活跃天数、局数、日均、3BV、op/is、1/破率、头部表现；点月份展开用时分档 / 3BVS 分档）、年汇总（三级三卡纵向排列）；
 - **月年**：按月 / 按年取每期前 8 / 14 条（默认，可在参数里改），可切指标与难度；局数统计全部录像（含低于各级下限的局），排名只取达到各级 3BV 下限的局；
@@ -199,7 +199,7 @@ npm run build
 ```bash
 npm ci
 npm run typecheck   # TypeScript 类型检查
-npm test            # 136 个单元 / 集成测试
+npm test            # 139 个单元 / 集成测试
 npm run build       # 产物输出到 dist/
 python scripts/pack-release.py dist release/yuanshen-helper-<version>.zip  # 发布包，zip 内用 / 分隔
 npm run watch       # 持续构建；改完在 chrome://extensions 重新加载
@@ -210,6 +210,8 @@ npm run verify:player -- 16   # 用站点接口对拍某个用户的 PB / 前端
 
 
 ### 项目结构
+
+界面字体使用 MiSans（© Xiaomi），只打包 UI 文案用到的字形子集；字体归属和许可说明见 `public/fonts/misans/NOTICE.txt`。
 
 ```
 src/
@@ -254,8 +256,9 @@ src/
 │       ├── store.ts              # 玩家录像缓存读写
 │       └── view.ts               # 玩家数据页 UI
 ├── shared/                       # 数据库连接、设置、日志、格式化、图标、玩家 ID、小工具
+├── public/fonts/misans/          # MiSans 子集与 NOTICE
 └── styles/                       # 基础 / popup / options / upload / player 样式
-tests/                            # 136 个测试（全部使用合成数据）
+tests/                            # 139 个测试（全部使用合成数据）
 ```
 
 图标源文件在 `assets/icon-source.webp`，可用以下命令重新生成：

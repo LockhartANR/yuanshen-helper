@@ -53,6 +53,45 @@ export interface LevelSummary {
   last30: number
 }
 
+export interface TodayStat {
+  level: Level
+  count: number
+  fl: number
+  nf: number
+  bestTime: AnalysisGame | null
+  bestBvs: AnalysisGame | null
+  bestStnb: AnalysisGame | null
+  avgTime: number
+  avgBv: number
+  avgBvs: number
+  avgStnb: number
+}
+
+const LEVEL_EN: Record<Level, string> = {
+  b: 'beg',
+  i: 'int',
+  e: 'exp',
+}
+
+/** 今日数据复制文本；纯函数，表格和剪贴板共用同一套格式。 */
+export function todayCopyText(row: TodayStat): string {
+  const avgBv = row.avgBv.toFixed(1)
+  const best =
+    row.bestTime && row.bestBvs && row.bestStnb
+      ? `T ${row.bestTime.time.toFixed(3)}/${row.bestTime.bv} | B ${row.bestBvs.bvs.toFixed(3)}/${row.bestBvs.bv} | S ${row.bestStnb.stnb.toFixed(1)}/${row.bestStnb.bv}`
+      : 'T — | B — | S —'
+  const avg =
+    row.count > 0
+      ? `T ${row.avgTime.toFixed(3)} | B ${row.avgBvs.toFixed(3)} | S ${row.avgStnb.toFixed(1)} | 3BV ${avgBv}`
+      : 'T — | B — | S — | 3BV —'
+  return [
+    `/me has finished ${row.count} ${LEVEL_EN[row.level]} game today`,
+    `Games ${row.count} = ${row.fl} FL + ${row.nf} NF`,
+    `Best ${best}`,
+    `Avg  ${avg}`,
+  ].join('\n')
+}
+
 export interface RecentPb {
   game: AnalysisGame
   prev: number
@@ -229,6 +268,41 @@ export function summarize(games: AnalysisGame[], now: number, days = 30): LevelS
   })
 }
 
+export function todayStats(games: AnalysisGame[], now: number): TodayStat[] {
+  const start = startOfLocalDay(now)
+  const end = addLocalDays(start, 1)
+  return LEVELS.map((level) => {
+    const rows = games.filter(
+      (game) => game.level === level && game.date >= start && game.date < end,
+    )
+    const bestTime = rows.reduce<AnalysisGame | null>(
+      (best, game) => (best === null || game.time < best.time ? game : best),
+      null,
+    )
+    const bestBvs = rows.reduce<AnalysisGame | null>(
+      (best, game) => (best === null || game.bvs > best.bvs ? game : best),
+      null,
+    )
+    const bestStnb = rows.reduce<AnalysisGame | null>(
+      (best, game) => (best === null || game.stnb > best.stnb ? game : best),
+      null,
+    )
+    return {
+      level,
+      count: rows.length,
+      nf: rows.filter((game) => game.nf).length,
+      fl: rows.filter((game) => !game.nf).length,
+      bestTime,
+      bestBvs,
+      bestStnb,
+      avgTime: average(rows.map((game) => game.time)),
+      avgBv: average(rows.map((game) => game.bv)),
+      avgBvs: average(rows.map((game) => game.bvs)),
+      avgStnb: average(rows.map((game) => game.stnb)),
+    }
+  })
+}
+
 export function recentPb(games: AnalysisGame[], now: number, days = 30, limit = 8): RecentPb[] {
   return games
     .filter(
@@ -273,6 +347,12 @@ function mondayOf(timestamp: number): number {
 function addLocalDays(timestamp: number, days: number): number {
   const date = new Date(timestamp)
   date.setDate(date.getDate() + days)
+  return date.getTime()
+}
+
+function startOfLocalDay(timestamp: number): number {
+  const date = new Date(timestamp)
+  date.setHours(0, 0, 0, 0)
   return date.getTime()
 }
 

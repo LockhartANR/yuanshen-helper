@@ -22,6 +22,8 @@ import {
   recentPb,
   subStats,
   summarize,
+  todayCopyText,
+  todayStats,
   weekStats,
   yearStats,
 } from './analysis'
@@ -78,6 +80,27 @@ const DAY_MS = 86_400_000
 
 function formatTime(seconds: number): string {
   return seconds.toFixed(3)
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const area = document.createElement('textarea')
+    try {
+      area.value = text
+      area.style.position = 'fixed'
+      area.style.opacity = '0'
+      document.body.append(area)
+      area.select()
+      return document.execCommand('copy')
+    } catch {
+      return false
+    } finally {
+      area.remove()
+    }
+  }
 }
 
 function videoLink(game: AnalysisGame, text: string, className = ''): string {
@@ -157,6 +180,7 @@ export function createAnalysisView(): AnalysisView {
   let games: AnalysisGame[] = []
   let rangeGames: AnalysisGame[] = []
   let ratingGames: AnalysisGame[] = []
+  let todaySnapshot: ReturnType<typeof todayStats> = []
   let now = Date.now()
   const settings = loadAnalysisSettings()
   configureColors(settings.colorThresholds)
@@ -533,6 +557,22 @@ export function createAnalysisView(): AnalysisView {
   }
 
   const viewHost = el('div', 'analysis-view')
+  viewHost.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element)) return
+    const button = event.target.closest<HTMLButtonElement>('[data-copy-level]')
+    if (!button) return
+    const level = button.dataset.copyLevel
+    const row = todaySnapshot.find((item) => item.level === level)
+    if (!row) return
+    void copyText(todayCopyText(row)).then((ok) => {
+      button.textContent = ok ? '已复制' : '复制失败'
+      button.classList.toggle('copied', ok)
+      window.setTimeout(() => {
+        button.textContent = '复制'
+        button.classList.remove('copied')
+      }, 1200)
+    })
+  })
   const note = el(
     'p',
     'analysis-note',
@@ -544,13 +584,14 @@ export function createAnalysisView(): AnalysisView {
   root.append(filters, settingsPanel, nav, viewHost, note, credit)
 
   function applyFilters(): void {
-    games = applyBvFloors(
-      analyzeGames(videos, { software: state.software, nfOnly: state.nfOnly }, 1),
-      settings.bvFloors,
+    const filtered = analyzeGames(
+      videos,
+      { software: state.software, nfOnly: state.nfOnly },
+      1,
     )
-    rangeGames = analyzeGames(videos, { software: state.software, nfOnly: state.nfOnly }, 2)
-    // 定阶 / LSF 始终用全时段全部录像，不受软件、NF、时间范围筛选影响。
-    ratingGames = analyzeGames(videos, {}, 1)
+    games = applyBvFloors(filtered, settings.bvFloors)
+    // 月年局数与 rAvg 保留 2–9，但不再套用各级 3BV 下限。
+    rangeGames = filtered.filter((game) => game.bv >= 2)
     if (state.range > 0) {
       const cutoff = now - state.range * DAY_MS
       games = games.filter((game) => game.date >= cutoff)
@@ -606,6 +647,8 @@ export function createAnalysisView(): AnalysisView {
     const lastWeek = weeks[weeks.length - 1]
     const days = activeDays(games, now, 30)
     const summary = summarize(games, now)
+    const today = todayStats(ratingGames, now)
+    todaySnapshot = today
     const rating = ratingSnapshot(
       ratingGames,
       settings.anchors,
@@ -669,6 +712,30 @@ export function createAnalysisView(): AnalysisView {
       })
       .join('')
 
+    const todayRows = today
+      .map((row) => {
+        const bestTime = row.bestTime
+          ? `${formatTime(row.bestTime.time)}/${row.bestTime.bv}`
+          : '—'
+        const bestBvs = row.bestBvs ? `${row.bestBvs.bvs.toFixed(3)}/${row.bestBvs.bv}` : '—'
+        const bestStnb = row.bestStnb ? `${row.bestStnb.stnb.toFixed(1)}/${row.bestStnb.bv}` : '—'
+        return (
+          '<tr>' +
+          `<td><span class="lv"><i></i>${LEVEL_LABELS[row.level]}</span></td>` +
+          `<td class="num">${row.count}（${row.fl}FL/${row.nf}NF）</td>` +
+          `<td class="num"${row.bestTime ? colorAttr(row.level, 'time', row.bestTime.time) : ''}>${bestTime}</td>` +
+          `<td class="num"${row.bestBvs ? colorAttr(row.level, 'bvs', row.bestBvs.bvs) : ''}>${bestBvs}</td>` +
+          `<td class="num"${row.bestStnb ? colorAttr(row.level, 'stnb', row.bestStnb.stnb) : ''}>${bestStnb}</td>` +
+          `<td class="num"${row.count > 0 ? colorAttr(row.level, 'time', row.avgTime) : ''}>${row.count > 0 ? formatTime(row.avgTime) : '—'}</td>` +
+          `<td class="num"${row.count > 0 ? colorAttr(row.level, 'bvs', row.avgBvs) : ''}>${row.count > 0 ? row.avgBvs.toFixed(3) : '—'}</td>` +
+          `<td class="num"${row.count > 0 ? colorAttr(row.level, 'stnb', row.avgStnb) : ''}>${row.count > 0 ? row.avgStnb.toFixed(1) : '—'}</td>` +
+          `<td class="num">${row.count > 0 ? row.avgBv.toFixed(1) : '—'}</td>` +
+          `<td class="copy-cell"><button type="button" class="copy-today" data-copy-level="${row.level}" aria-label="复制今日${LEVEL_LABELS[row.level]}数据" title="复制今日${LEVEL_LABELS[row.level]}数据">复制</button></td>` +
+          '</tr>'
+        )
+      })
+      .join('')
+
     return (
       '<div class="kpi-grid">' +
       '<div class="kpi rank-card"><span>定阶</span>' +
@@ -680,7 +747,7 @@ export function createAnalysisView(): AnalysisView {
       `<small>NF 初 ${rating.levels[0]?.nfSoft.toFixed(1)} · 中 ${rating.levels[1]?.nfSoft.toFixed(1)} · 高 ${rating.levels[2]?.nfSoft.toFixed(1)}</small>` +
       `<small>NF 定阶 ${rating.nfTitle}</small>` +
       '</div>' +
-      '<div class="kpi"><span>近 30 天新纪录</span>' +
+      '<div class="kpi"><span>近 30 天新 PB</span>' +
       `<b>${recentCount}</b>` +
       `<small>${recent[0] ? `最近一条 ${formatShortDate(recent[0].game.date)}` : '最近没有新 PB'}</small></div>` +
       '<div class="kpi"><span>本周 T37</span>' +
@@ -689,6 +756,14 @@ export function createAnalysisView(): AnalysisView {
       '<div class="kpi"><span>近 30 天活跃</span>' +
       `<b>${days} 天</b>` +
       `<small>${games.filter((game) => game.date >= now - 30 * DAY_MS).length} 局</small></div>` +
+      '</div>' +
+
+      '<div class="card">' +
+      '<div class="card-head"><h2 class="card-title">今日成绩</h2></div>' +
+      '<div class="table-scroll"><table class="data-table summary-table today-table">' +
+      '<thead><tr><th>难度</th><th class="num">总局数</th><th class="num">Best Time</th><th class="num">Best 3BVS</th><th class="num">Best STNB</th><th class="num">Avg Time</th><th class="num">Avg 3BVS</th><th class="num">Avg STNB</th><th class="num">Avg 3BV</th><th class="copy-cell"></th></tr></thead>' +
+      `<tbody>${todayRows}</tbody>` +
+      '</table></div>' +
       '</div>' +
 
       '<div class="card">' +
@@ -1604,6 +1679,7 @@ export function createAnalysisView(): AnalysisView {
   function update(next: Video[]): void {
     videos = next
     now = Date.now()
+    ratingGames = analyzeGames(videos, {}, 1)
     applyFilters()
     render()
   }

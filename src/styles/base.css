@@ -1,3 +1,5 @@
+@import './misans.css';
+
 :root {
   color-scheme: light dark;
   --bg: #ffffff;
@@ -49,10 +51,11 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC",
-    "Hiragino Sans GB", sans-serif;
+    "MiSans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+    "PingFang SC", "Hiragino Sans GB", sans-serif;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
 

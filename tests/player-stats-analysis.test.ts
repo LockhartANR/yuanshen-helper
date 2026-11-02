@@ -20,6 +20,7 @@ import {
   recentPb,
   subStats,
   summarize,
+  todayStats,
   weekStats,
   yearStats,
 } from '../src/features/player-stats/analysis'
@@ -129,6 +130,23 @@ describe('summarize', () => {
     expect(beginner.pb?.video.id).toBe(2)
     expect(beginner.nfRatio).toBeCloseTo(1 / 3)
     expect(summary[2]!.count).toBe(1)
+  })
+
+  it('今日成绩按难度拆分 FL / NF，并给出最佳与平均', () => {
+    const now = Date.now()
+    const today = new Date(now).toISOString()
+    const games = analyzeGames([
+      video({ id: 1, timems: 5000, bv: 20, right: 0, right_ce: 0, end_time: today }),
+      video({ id: 2, timems: 7000, bv: 30, right: 2, right_ce: 2, end_time: today }),
+    ])
+    const beginner = todayStats(games, now)[0]!
+    expect(beginner.count).toBe(2)
+    expect(beginner.fl).toBe(1)
+    expect(beginner.nf).toBe(1)
+    expect(beginner.bestTime?.video.id).toBe(1)
+    expect(beginner.bestBvs?.video.id).toBe(2)
+    expect(beginner.avgTime).toBeCloseTo(6)
+    expect(beginner.avgBv).toBeCloseTo(25)
   })
 })
 
