@@ -2,6 +2,12 @@
 
 版本号与 `package.json`、`public/manifest.json` 保持一致。
 
+## 1.0.2 — 2026-11-02
+
+### 修复
+
+- 今日成绩复制文本使用 `games`（`/me has finished N beg games today`）
+
 ## 1.0.1 — 2026-11-02
 
 ### 新增

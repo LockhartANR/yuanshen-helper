@@ -68,7 +68,7 @@ describe('今日成绩', () => {
     const row = todayStats(games, now)[0]!
     const lines = todayCopyText(row).split('\n')
 
-    expect(lines[0]).toBe('/me has finished 2 beg game today')
+    expect(lines[0]).toBe('/me has finished 2 beg games today')
     expect(lines[1]).toBe('Games 2 = 1 FL + 1 NF')
     expect(lines[2]).toMatch(/^Best T 5\.000\/20 \| B 4\.286\/30 \| S \d+\.\d\/20$/)
     expect(lines[3]).toMatch(/^Avg  T 6\.000 \| B 4\.143 \| S \d+\.\d \| 3BV 25\.0$/)

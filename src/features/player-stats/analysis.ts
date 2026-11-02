@@ -85,7 +85,7 @@ export function todayCopyText(row: TodayStat): string {
       ? `T ${row.avgTime.toFixed(3)} | B ${row.avgBvs.toFixed(3)} | S ${row.avgStnb.toFixed(1)} | 3BV ${avgBv}`
       : 'T — | B — | S — | 3BV —'
   return [
-    `/me has finished ${row.count} ${LEVEL_EN[row.level]} game today`,
+    `/me has finished ${row.count} ${LEVEL_EN[row.level]} games today`,
     `Games ${row.count} = ${row.fl} FL + ${row.nf} NF`,
     `Best ${best}`,
     `Avg  ${avg}`,
