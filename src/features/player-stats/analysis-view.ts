@@ -104,6 +104,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 function videoLink(game: AnalysisGame, text: string, className = ''): string {
+  if (game.video.id <= 0) return `<span class="${className}">${text}</span>`
   const href = `${SITE_ORIGIN}/#/video/${game.video.id}`
   return `<a class="${className}" href="${href}" target="_blank" rel="noreferrer">${text}</a>`
 }
@@ -153,7 +154,7 @@ function dateAttr(value: number, dates: number[]): string {
 
 export interface AnalysisView {
   root: HTMLElement
-  update(videos: Video[]): void
+  update(videos: Video[], options?: { csv?: boolean }): void
 }
 
 export function createAnalysisView(): AnalysisView {
@@ -186,6 +187,7 @@ export function createAnalysisView(): AnalysisView {
   configureColors(settings.colorThresholds)
   let anchorError = false
   let anchorRequest = 0
+  let csvMode = false
   const floorLabel = (): string =>
     `${settings.bvFloors.b}/${settings.bvFloors.i}/${settings.bvFloors.e}`
 
@@ -576,7 +578,7 @@ export function createAnalysisView(): AnalysisView {
   const note = el(
     'p',
     'analysis-note',
-    '赛博大表只统计模式 00 的已审核录像，3BV 下限默认 10 / 30 / 100；NF 按右键 = 0。',
+    '赛博大表只统计模式 00 的已审核录像，3BV 下限默认 10 / 30 / 100；网站 NF 按右键 = 0，CSV 按 style=NF。',
   )
   const credit = el('p', 'analysis-note', '统计方式来自大表 ArbiterStatsAuto · ')
   credit.append(authorHomeLink())
@@ -586,7 +588,7 @@ export function createAnalysisView(): AnalysisView {
   function applyFilters(): void {
     const filtered = analyzeGames(
       videos,
-      { software: state.software, nfOnly: state.nfOnly },
+      { software: csvMode ? 'all' : state.software, nfOnly: state.nfOnly },
       1,
     )
     games = applyBvFloors(filtered, settings.bvFloors)
@@ -656,18 +658,44 @@ export function createAnalysisView(): AnalysisView {
       settings.levelWeights,
       settings.bvFloors,
     )
-    const gc = gcStats(games)
-    const gcBinRows = gc
+    const gc = gcStats(rangeGames)
+    const gcRows = gc
+      .map(
+        (item) =>
+          '<tr>' +
+          `<td>${LEVEL_LABELS[item.level]}</td>` +
+          `<td class="num">${item.asb.toFixed(3)}</td>` +
+          `<td class="num">${item.power.toFixed(3)}</td>` +
+          `<td class="num">${item.typicalTime.toFixed(3)}</td>` +
+          '</tr>',
+      )
+      .join('')
+    const gcTotal = gc.reduce(
+      (sum, item) => ({
+        asb: sum.asb + item.asb,
+        power: sum.power + item.power,
+        typicalTime: sum.typicalTime + item.typicalTime,
+      }),
+      { asb: 0, power: 0, typicalTime: 0 },
+    )
+    const gcTotalRow =
+      '<tr class="gc-total">' +
+      '<td>合计</td>' +
+      `<td class="num">${gcTotal.asb.toFixed(3)}</td>` +
+      `<td class="num">${gcTotal.power.toFixed(3)}</td>` +
+      `<td class="num">${gcTotal.typicalTime.toFixed(3)}</td>` +
+      '</tr>'
+    const gcSegmentRows = gc
       .flatMap((item) =>
-        item.bins.map(
-          (bin) =>
+        item.segments.map(
+          (segment) =>
             '<tr>' +
             `<td>${LEVEL_LABELS[item.level]}</td>` +
-            `<td class="num">${bin.bin}</td>` +
-            `<td class="num">${bin.start}–${bin.end >= 999 ? '+' : bin.end}</td>` +
-            `<td class="num">${formatCount(bin.count)}</td>` +
-            `<td class="num">${(bin.bvCount === 0 ? 0 : bin.asb / bin.bvCount).toFixed(2)}</td>` +
-            `<td class="num">${bin.power.toFixed(2)}</td>` +
+            `<td class="num">${segment.start}–${segment.end}</td>` +
+            `<td class="num">${formatCount(segment.count)}</td>` +
+            `<td class="num">${segment.power > 0 ? segment.power.toFixed(4) : '—'}</td>` +
+            `<td class="num">${segment.bv > 0 ? segment.bv.toFixed(3) : '—'}</td>` +
+            `<td class="num">${segment.time > 0 ? segment.time.toFixed(3) : '—'}</td>` +
             '</tr>',
         ),
       )
@@ -775,15 +803,15 @@ export function createAnalysisView(): AnalysisView {
       '</div>' +
 
       '<div class="card">' +
-      '<div class="card-head"><h2 class="card-title">GC 指标</h2><span class="muted">asb / 战力 / 典型时</span></div>' +
+      '<div class="card-head"><h2 class="card-title">GC 指标</h2><span class="muted">ASB / 战力 / 典型时</span></div>' +
       '<table class="data-table">' +
-      '<thead><tr><th>难度</th><th class="num">asb</th><th class="num">战力</th><th class="num">典型时</th></tr></thead>' +
-      `<tbody>${gc.map((item) => '<tr>' + `<td>${LEVEL_LABELS[item.level]}</td>` + `<td class="num">${item.asb.toFixed(2)}</td>` + `<td class="num">${item.power.toFixed(2)}</td>` + `<td class="num">${item.typicalTime.toFixed(2)}</td>` + '</tr>').join('')}</tbody>` +
+      '<thead><tr><th>难度</th><th class="num">ASB 和</th><th class="num">战力</th><th class="num">典型时</th></tr></thead>' +
+      `<tbody>${gcRows}${gcTotalRow}</tbody>` +
       '</table>' +
-      '<details class="settings-advanced gc-bins"><summary>GC 分档明细</summary>' +
+      '<details class="settings-advanced gc-bins"><summary>GC 分段明细</summary>' +
       '<div class="table-scroll"><table class="data-table">' +
-      '<thead><tr><th>难度</th><th class="num">档位</th><th class="num">3BV</th><th class="num">局数</th><th class="num">平均 asb</th><th class="num">战力贡献</th></tr></thead>' +
-      `<tbody>${gcBinRows || '<tr><td colspan="6" class="muted">没有数据</td></tr>'}</tbody>` +
+      '<thead><tr><th>难度</th><th class="num">分段</th><th class="num">局数</th><th class="num">分段战力</th><th class="num">分段典型3BV</th><th class="num">分段典型时</th></tr></thead>' +
+      `<tbody>${gcSegmentRows || '<tr><td colspan="6" class="muted">没有数据</td></tr>'}</tbody>` +
       '</table></div></details>' +
       '</div>' +
 
@@ -1676,8 +1704,15 @@ export function createAnalysisView(): AnalysisView {
     render()
   })
 
-  function update(next: Video[]): void {
+  function update(next: Video[], options: { csv?: boolean } = {}): void {
     videos = next
+    csvMode = options.csv === true
+    if (csvMode) {
+      softwareSelect.value = 'all'
+    } else {
+      softwareSelect.value = state.software
+    }
+    softwareField.classList.toggle('hidden', csvMode)
     now = Date.now()
     ratingGames = analyzeGames(videos, {}, 1)
     applyFilters()

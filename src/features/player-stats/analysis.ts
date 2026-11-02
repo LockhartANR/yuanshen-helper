@@ -1,7 +1,7 @@
 import { bvsOf, eligible, stnbOf } from './compute'
-import { BIN_BV, BIN_RATE, BV_RATE } from './gc-coefficients'
+import { BV_RATE } from './gc-coefficients'
 import type { AnalyzeOptions, Level, Video } from './model'
-import { LEVELS, isLevel } from './model'
+import { LEVELS, isLevel, compareVideoOrder } from './model'
 
 /** 工作簿里绝大多数榜单要求 3BV > 9。 */
 const MIN_ANALYSIS_BV = 10
@@ -198,14 +198,14 @@ export function buildGames(
       ),
       hasRight: typeof video.right === 'number' && Number.isFinite(video.right),
       date: videoDate(video),
-      nf: video.right === 0,
+      nf: video.csvNf ?? (video.right === 0),
       pb: false,
       pbPrev: null,
     }
     games.push(game)
   }
 
-  games.sort((a, b) => a.date - b.date || a.video.id - b.video.id)
+  games.sort((a, b) => a.date - b.date || compareVideoOrder(a.video, b.video))
   return games
 }
 
@@ -219,7 +219,7 @@ function filterGames(games: AnalysisGame[], filter: AnalysisFilter): AnalysisGam
   })
 }
 
-/** 按各级 3BV 下限过滤；低于下限的录像不进入榜单 / 趋势 / GC 等分析。 */
+/** 按各级 3BV 下限过滤；GC、今日成绩等统计由调用方使用未套用下限的数据。 */
 export function applyBvFloors(
   games: AnalysisGame[],
   floors: Record<Level, number>,
@@ -657,7 +657,7 @@ export function rankGames(
   const rows = level === undefined ? games : games.filter((game) => game.level === level)
   const sorted = [...rows]
   sorted.sort((a, b) => {
-    if (stat === 'time') return a.time - b.time || a.date - b.date || a.video.id - b.video.id
+    if (stat === 'time') return a.time - b.time || a.date - b.date || compareVideoOrder(a.video, b.video)
     const diff = b[stat] - a[stat]
     return Math.abs(diff) > EPSILON ? diff : a.time - b.time
   })
@@ -1000,14 +1000,13 @@ export function yearStats(
   })
 }
 
-export interface GcBinStat {
-  bin: number
+export interface GcSegmentStat {
   start: number
   end: number
   count: number
-  bvCount: number
-  asb: number
   power: number
+  bv: number
+  time: number
 }
 
 export interface GcStat {
@@ -1015,102 +1014,94 @@ export interface GcStat {
   asb: number
   power: number
   typicalTime: number
-  bins: GcBinStat[]
+  segments: GcSegmentStat[]
 }
 
-function gcBin(level: Level, bv: number): number {
-  if (level === 'b') return Math.min(4, Math.floor(bv / 10) + 1)
-  if (level === 'i') return Math.min(12, Math.max(5, Math.floor((bv + 20) / 10)))
-  return Math.min(23, Math.max(13, Math.floor((bv + 10) / 10)))
+const GC_SEGMENTS: Record<Level, Array<[number, number]>> = {
+  b: [
+    [2, 9],
+    [10, 19],
+    [20, 29],
+    [30, 54],
+  ],
+  i: [
+    [30, 39],
+    [40, 49],
+    [50, 59],
+    [60, 69],
+    [70, 79],
+    [80, 89],
+    [90, 99],
+    [100, 216],
+  ],
+  e: [
+    [100, 129],
+    ...Array.from({ length: 9 }, (_, index) => [130 + index * 10, 139 + index * 10] as [number, number]),
+    [220, 381],
+  ],
 }
 
-function gcBinRange(level: Level, bin: number): [number, number] {
-  if (level === 'b') {
-    if (bin <= 1) return [1, 9]
-    if (bin === 4) return [30, 999]
-    return [(bin - 1) * 10, bin * 10 - 1]
-  }
-  if (level === 'i') {
-    if (bin === 12) return [100, 999]
-    const start = 30 + (bin - 5) * 10
-    return [start, start + 9]
-  }
-  if (bin === 13) return [100, 129]
-  if (bin === 23) return [220, 999]
-  const start = 130 + (bin - 14) * 10
-  return [start, start + 9]
-}
-
-/** 原表 GC 的 asb / 战力 / 典型时（按 bv 分档汇总）。 */
+/** 原表 GC 的 ASB / 战力 / 典型时（按 3BV 分段汇总）。 */
 export function gcStats(games: AnalysisGame[]): GcStat[] {
-  const byLevel = new Map<Level, Map<number, number[]>>()
-  const gamesByBin = new Map<Level, Map<number, number>>()
-  for (const game of games) {
-    let levelMap = byLevel.get(game.level)
-    if (!levelMap) {
-      levelMap = new Map()
-      byLevel.set(game.level, levelMap)
+  return LEVELS.map((level) => {
+    const ranges = GC_SEGMENTS[level]
+    const segmentOf = (bv: number): number =>
+      ranges.findIndex(([start, end]) => bv >= start && bv <= end)
+    const counts = ranges.map(() => 0)
+    const pbBvs = new Map<number, number>()
+    for (const game of games) {
+      if (game.level !== level) continue
+      const index = segmentOf(game.bv)
+      if (index < 0) continue
+      counts[index] += 1
+      pbBvs.set(game.bv, Math.max(pbBvs.get(game.bv) ?? 0, game.bvs))
     }
-    let binMap = gamesByBin.get(game.level)
-    if (!binMap) {
-      binMap = new Map()
-      gamesByBin.set(game.level, binMap)
-    }
-    const bin = gcBin(game.level, game.bv)
-    binMap.set(bin, (binMap.get(bin) ?? 0) + 1)
-    const list = levelMap.get(game.bv)
-    if (!list) {
-      levelMap.set(game.bv, [game.bvs])
-      continue
-    }
-    list.push(game.bvs)
-    list.sort((a, b) => b - a)
-    if (list.length > 10) list.length = 10
-  }
 
-  return LEVELS.map((level, levelIndex) => {
-    let asbSum = 0
-    let asbBins = 0
+    let asb = 0
     let powerSum = 0
-
-    const levelMap = byLevel.get(level) ?? new Map<number, number[]>()
-    const binCounts = gamesByBin.get(level) ?? new Map<number, number>()
-    const binEntries = new Map<number, GcBinStat>()
-    for (const [bin, count] of binCounts) {
-      const [start, end] = gcBinRange(level, bin)
-      binEntries.set(bin, { bin, start, end, count, bvCount: 0, asb: 0, power: 0 })
+    let typicalTime = 0
+    const rateOf = (bv: number): number => {
+      const maxBv = level === 'b' ? 54 : level === 'i' ? 134 : 278
+      if (bv > maxBv) return 0
+      const coefficientIndex = bv + (level === 'b' ? 0 : level === 'i' ? 36 : 82)
+      return BV_RATE[coefficientIndex - 1] ?? 0
     }
 
-    for (const [bv, list] of levelMap) {
-      const bin = gcBin(level, bv)
-      const sum = list.reduce((total, value) => total + value, 0)
-      if (!(level === 'b' && bin === 1)) {
-        asbSum += sum
-        asbBins += 1
+    const segments: GcSegmentStat[] = ranges.map(([start, end], index) => {
+      let rateSum = 0
+      let powerNum = 0
+      let bvNum = 0
+      let segmentAsb = 0
+      for (let bv = start; bv <= end; bv += 1) {
+        const pb = pbBvs.get(bv) ?? 0
+        const rate = rateOf(bv)
+        rateSum += rate
+        powerNum += pb * rate
+        bvNum += bv * rate
+        segmentAsb += pb
       }
-      const binRate = BIN_RATE[bin - 1] ?? 1
-      const coefficientIndex = Math.min(
-        BV_RATE.length,
-        level === 'b' ? bv : level === 'i' ? bv + 36 : bv + 82,
-      )
-      const power = (sum * (BV_RATE[coefficientIndex - 1] ?? 0)) / binRate / 100
-      powerSum += power
-      const entry = binEntries.get(bin)
-      if (entry) {
-        entry.bvCount += 1
-        entry.asb += sum / 10
-        entry.power += power
+      asb += level === 'b' && start === 2 ? 0 : segmentAsb
+      powerSum += powerNum
+      const power = rateSum > 0 ? powerNum / rateSum : 0
+      const bv = rateSum > 0 ? bvNum / rateSum : 0
+      const time = power > 0 ? bv / power : 0
+      typicalTime += time
+      return {
+        start,
+        end,
+        count: counts[index],
+        power,
+        bv,
+        time,
       }
-    }
+    })
 
-    const power = powerSum
-    const ratedBv = BIN_BV[23 + levelIndex] ?? 0
     return {
       level,
-      asb: asbBins === 0 ? 0 : asbSum / 10 / asbBins,
-      power,
-      typicalTime: power > 0 ? ratedBv / power : 0,
-      bins: [...binEntries.values()].sort((a, b) => a.bin - b.bin),
+      asb,
+      power: powerSum / 100,
+      typicalTime,
+      segments,
     }
   })
 }

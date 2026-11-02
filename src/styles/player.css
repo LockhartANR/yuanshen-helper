@@ -397,6 +397,42 @@ body {
   box-shadow: var(--shadow);
 }
 
+.source-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.source-tab {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.source-tab:hover {
+  background: var(--hover);
+}
+
+.source-tab.active {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.source-files {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .analysis-nav {
   display: flex;
   gap: 2px;
@@ -773,13 +809,14 @@ body {
   text-align: right;
 }
 
+.rank-table tr.top1 td,
+.rank-table tr.top3 td {
+  font-weight: 600;
+}
+
 .rank-table tr.top1 .rank {
   color: var(--accent);
   font-weight: 700;
-}
-
-.rank-table tr.top3 td {
-  font-weight: 600;
 }
 
 .rank-table .pb-link,
@@ -898,6 +935,11 @@ body {
 }
 
 .week-total td {
+  font-weight: 600;
+  background: var(--surface);
+}
+
+.gc-total td {
   font-weight: 600;
   background: var(--surface);
 }

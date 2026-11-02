@@ -8,6 +8,8 @@ export type TopStat = (typeof TOP_STATS)[number]
 
 /** 站点前端成绩的 3BV 下限，低于下限的录像不计入。 */
 export const MIN_BV: Record<Level, number> = { b: 10, i: 30, e: 100 }
+/** 标准棋盘可导入的 3BV 上限，与统计下限、GC 分段无关。 */
+export const MAX_BV: Record<Level, number> = { b: 54, i: 216, e: 381 }
 
 /** STNB 系数：stnb = coefficient × bv / seconds^1.7。 */
 export const STNB_COEFFICIENT: Record<Level, number> = { b: 36, i: 162, e: 435 }
@@ -23,6 +25,7 @@ const SOFTWARE_LABELS: Record<string, string> = {
   e: 'evf',
   m: 'mvf',
   r: 'rmv',
+  csv: 'CSV',
 }
 
 export function isLevel(value: string): value is Level {
@@ -66,6 +69,17 @@ export interface VideoDetail {
 /** 列表与明细合并后的记录。 */
 export interface Video extends VideoMeta, VideoDetail {
   ongoing_tournament: boolean
+  /** 仅本地 CSV：style 的显式分类，保留原始点击字段。 */
+  csvNf?: boolean
+  /** 仅本地 CSV：跨文件递增的导入顺序，同分时先导入优先。 */
+  importOrder?: number
+}
+
+export function compareVideoOrder(a: Video, b: Video): number {
+  if (a.importOrder !== undefined && b.importOrder !== undefined) {
+    return a.importOrder - b.importOrder
+  }
+  return a.id - b.id
 }
 
 export interface AnalyzeOptions {

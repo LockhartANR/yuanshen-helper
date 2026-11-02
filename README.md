@@ -19,7 +19,7 @@
 - **键盘操作**：`↑` / `↓` 选择，`Enter` 打开，`Esc` 关闭
 - **姓名状态**：区分普通实名、匿名、隐藏实名
 - **录像自动上传**：选定本地录像目录后按周期轮询，新录像自动传到站点；支持「补传已有」和「只传新的」
-- **玩家录像数据**：搜索结果行右侧「数据」按钮打开独立页面。顶部「成绩概况」有按软件 / NF 筛选的 PB 网格、前端成绩 Top5；「赛博大表」提供概览、榜单、趋势、月年、分布、效率、地图七个分析页签，按原表色板上色
+- **玩家录像数据**：搜索结果行右侧「数据」按钮打开独立页面。顶部「成绩概况」有按软件 / NF 筛选的 PB 网格、前端成绩 Top5；「赛博大表」提供概览、榜单、趋势、月年、分布、效率、地图七个分析页签，按原表色板上色。玩家页还支持导入 Arbiter / Anthropic 格式的 stats CSV，多个文件合并，不混入网站玩家数据、不做去重；网站锚点仍遵循用户设置。
 - **我的成绩**：popup 头部「我的成绩」按钮直接打开自己的数据页，不用先搜自己；优先用站点登录态（打开 openms.top 时自动记录），没有就弹窗让你填一次站内 ID 并记住。数据页里也有同名按钮，从别人的成绩页一键跳回来
 - 浅色 / 深色主题跟随系统
 
@@ -145,7 +145,7 @@ npm run build
 
 **赛博大表**分七个页签。统计方式来自大表 **ArbiterStatsAuto**，默认参数为大表 **57.8**。原作者主页：[openms.top/#/player/48](https://openms.top/#/player/48)。
 
-- **概览**：定阶（等价 et）、软实力、LSF、近 30 天新 PB、本周 T37、活跃天数、今日成绩（不受 3BV 下限限制；初中高 FL/NF、Best/Avg Time、3BVS、STNB、Avg 3BV）、三难度摘要、GC 指标（含按 3BV 分档明细）、活跃日历（12 周热图 + 总对局 / 活跃天数 / 活跃日均 / 最长连续 / 最活跃日）、最近 PB；
+- **概览**：定阶（等价 et）、软实力、LSF、近 30 天新 PB、本周 T37、活跃天数、今日成绩（不受 3BV 下限限制；初中高 FL/NF、Best/Avg Time、3BVS、STNB、Avg 3BV）、三难度摘要、GC 指标（ASB 和 / 战力 / 典型时，含按 3BV 分段明细）、活跃日历（12 周热图 + 总对局 / 活跃天数 / 活跃日均 / 最长连续 / 最活跃日）、最近 PB；
 - **榜单**：用时 / 3BVS / STNB 的 Top 50，可按难度切，也可切「三难度」各看前 10；
 - **趋势**：周 T37 / B37 / S37 / ppp（含 10/30/99 秒占位补齐；点周行展开双列瀑布布局的三级槽位明细、总计 / 平均和 T.37 / B.37 / S.37 / BPP / IPP / EPP / PPP37）、月均明细（活跃天数、局数、日均、3BV、op/is、1/破率、头部表现；点月份展开用时分档 / 3BVS 分档）、年汇总（三级三卡纵向排列）；
 - **月年**：按月 / 按年取每期前 8 / 14 条（默认，可在参数里改），可切指标与难度；局数统计全部录像（含低于各级下限的局），排名只取达到各级 3BV 下限的局；
@@ -199,7 +199,7 @@ npm run build
 ```bash
 npm ci
 npm run typecheck   # TypeScript 类型检查
-npm test            # 139 个单元 / 集成测试
+npm test            # 单元 / 集成测试
 npm run build       # 产物输出到 dist/
 python scripts/pack-release.py dist release/yuanshen-helper-<version>.zip  # 发布包，zip 内用 / 分隔
 npm run watch       # 持续构建；改完在 chrome://extensions 重新加载
@@ -247,6 +247,7 @@ src/
 │       ├── analysis-view.ts      # 赛博大表 UI
 │       ├── api.ts                # 录像列表 / 明细分批请求、限流退避
 │       ├── colors.ts             # 原表色板与取色
+│       ├── csv.ts                # Arbiter / Anthropic stats CSV 解析
 │       ├── lsf-anchors.ts        # 站点 LSF 锚点读取与换算
 │       ├── compute.ts            # PB、前端成绩（纯函数）
 │       ├── model.ts              # 类型、STNB 系数、3BV 下限
@@ -258,7 +259,7 @@ src/
 ├── shared/                       # 数据库连接、设置、日志、格式化、图标、玩家 ID、小工具
 ├── public/fonts/misans/          # MiSans 子集与 NOTICE
 └── styles/                       # 基础 / popup / options / upload / player 样式
-tests/                            # 139 个测试（全部使用合成数据）
+tests/                            # 单元 / 集成测试（全部使用合成数据）
 ```
 
 图标源文件在 `assets/icon-source.webp`，可用以下命令重新生成：

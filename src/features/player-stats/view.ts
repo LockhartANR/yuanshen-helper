@@ -10,8 +10,9 @@ import { computePb, computeTop5, eligible, bvsOf, joinVideos, stnbOf } from './c
 import { configureColors, dateColorStyle, medianOf, pbColorStyle } from './colors'
 import { softwareIcon } from './software-icon'
 import type { Level, Top5Group, TopStat, Video } from './model'
-import { LEVELS, softwareLabel } from './model'
+import { LEVELS, MAX_BV, softwareLabel } from './model'
 import { ensureDetails, loadPlayer } from './service'
+import { parseStatsCsv } from './csv'
 
 const LEVEL_LABELS: Record<Level, string> = { b: '初级', i: '中级', e: '高级' }
 const STAT_LABELS: Record<TopStat, string> = { time: '用时', bvs: '3BVS', stnb: 'STNB' }
@@ -43,6 +44,13 @@ interface UiState {
   message: string
 }
 
+interface CsvImport {
+  name: string
+  total: number
+  videos: Video[]
+  invalidRows: number
+}
+
 function readUserId(): number | null {
   const value = Number(new URLSearchParams(location.search).get('id') ?? '')
   return Number.isSafeInteger(value) && value > 0 ? value : null
@@ -58,7 +66,8 @@ function formatEndTime(value: string | null): string {
   return Number.isNaN(time) ? '—' : formatDateTime(time)
 }
 
-function videoLink(id: number): HTMLAnchorElement {
+function videoLink(id: number): HTMLElement {
+  if (id <= 0) return el('span')
   return externalLink(`#${id}`, `${SITE_ORIGIN}/#/video/${id}`)
 }
 
@@ -85,7 +94,13 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   }
 
   let controller: AbortController | null = null
+  let requestVersion = 0
+  let csvImportVersion = 0
   let pendingUnapproved = false
+  let source: 'site' | 'csv' = 'site'
+  const csvImports: CsvImport[] = []
+  let csvIdBase = 0
+  let siteName = `#${userId}`
 
   // ---- 头部 ----
   const nameNode = el('h1', 'player-name', `#${userId}`)
@@ -134,7 +149,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     return { node: wrapper, input }
   }
 
-  const nfCheck = checkbox('NF', '只看盲扫（right_ce = 0）')
+  const nfCheck = checkbox('NF', '只看盲扫（网站按 right_ce = 0，CSV 按 style=NF）')
   const unapprovedCheck = checkbox('含未过审', '把未审核 / 冻结 / 标识不符 / 外部审核的录像也算进来')
 
   const filters = el('section', 'player-filters')
@@ -216,6 +231,29 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   const pageTabs = el('div', 'page-tabs')
   pageTabs.append(scoreTab, analysisTab)
 
+  const sourceBar = el('div', 'source-bar')
+  const siteSource = el('button', 'source-tab active', '网站数据')
+  const csvSource = el('button', 'source-tab', '本地 CSV')
+  siteSource.type = 'button'
+  csvSource.type = 'button'
+  const importCsvButton = el('button', 'button hidden', '导入 CSV')
+  importCsvButton.type = 'button'
+  const clearCsvButton = el('button', 'button hidden', '清除 CSV')
+  clearCsvButton.type = 'button'
+  const csvInput = el('input', 'hidden')
+  csvInput.type = 'file'
+  csvInput.accept = '.csv,text/csv'
+  csvInput.multiple = true
+  const csvFilesNote = el('p', 'source-files hidden')
+  const csvFeedback = el('div', 'source-files hidden')
+  const csvStatus = el('p')
+  csvStatus.setAttribute('role', 'status')
+  csvStatus.setAttribute('aria-live', 'polite')
+  csvStatus.setAttribute('aria-atomic', 'true')
+  const csvErrorDetails = el('details', 'hidden')
+  csvFeedback.append(csvStatus, csvErrorDetails)
+  sourceBar.append(siteSource, csvSource, importCsvButton, clearCsvButton, csvInput)
+
   const scorePane = el('div', 'player-pane')
   scorePane.append(filters, notice, status, pbCard, topCard)
 
@@ -224,7 +262,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   analysisPane.append(analysis.root)
 
   const wrap = el('main', 'player-page')
-  wrap.append(header, pageTabs, scorePane, analysisPane)
+  wrap.append(header, sourceBar, csvFilesNote, csvFeedback, pageTabs, scorePane, analysisPane)
   root.replaceChildren(wrap)
 
   function showPage(page: 'score' | 'analysis'): void {
@@ -240,15 +278,43 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   scoreTab.addEventListener('click', () => showPage('score'))
   analysisTab.addEventListener('click', () => showPage('analysis'))
 
+  siteSource.addEventListener('click', () => {
+    csvImportVersion += 1
+    setSource('site')
+  })
+  csvSource.addEventListener('click', () => {
+    csvImportVersion += 1
+    if (csvImports.length === 0) csvInput.click()
+    else setSource('csv')
+  })
+  importCsvButton.addEventListener('click', () => csvInput.click())
+  clearCsvButton.addEventListener('click', () => {
+    csvImportVersion += 1
+    csvImports.length = 0
+    renderCsvResult('')
+    setSource('site')
+  })
+  csvInput.addEventListener('change', () => {
+    const files = csvInput.files ? [...csvInput.files] : []
+    csvInput.value = ''
+    void importCsvFiles(files)
+  })
+
   function options() {
     return {
-      software: state.software,
+      software: source === 'csv' ? 'all' : state.software,
       nfOnly: state.nfOnly,
-      includeUnapproved: state.includeUnapproved,
+      includeUnapproved: source === 'site' && state.includeUnapproved,
     }
   }
 
   function rebuild(): void {
+    if (source === 'csv') {
+      state.videos = csvImports.flatMap((item) => item.videos)
+      analysis.update(state.videos, { csv: true })
+      render()
+      return
+    }
     const metas = state.rows.map((row) => ({
       id: row.id,
       upload_time: row.uploadTime,
@@ -260,28 +326,150 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     )
     const { videos } = joinVideos(metas, details)
     state.videos = videos
-    analysis.update(videos)
+    analysis.update(videos, { csv: false })
     render()
+  }
+
+  function renderCsvFiles(): void {
+    csvFilesNote.classList.toggle('hidden', source !== 'csv' || csvImports.length === 0)
+    csvFilesNote.textContent =
+      source === 'csv'
+        ? csvImports
+            .map(
+              (item) =>
+                `${item.name}：${item.videos.length}/${item.total} 局${item.invalidRows > 0 ? `（${item.invalidRows} 行无效）` : ''}`,
+            )
+            .join(' · ')
+        : ''
+  }
+
+  function renderCsvResult(message: string, errors: string[] = []): void {
+    csvFeedback.classList.toggle('hidden', message === '')
+    csvStatus.textContent = message
+    csvErrorDetails.replaceChildren()
+    csvErrorDetails.classList.toggle('hidden', errors.length === 0)
+    if (errors.length === 0) return
+    csvErrorDetails.append(el('summary', undefined, `查看 ${errors.length} 项导入问题`))
+    const list = el('ul')
+    for (const error of errors.slice(0, 50)) list.append(el('li', undefined, error))
+    csvErrorDetails.append(list)
+    if (errors.length > 50) csvErrorDetails.append(el('p', undefined, '仅显示前 50 项问题'))
+  }
+
+  function setSource(next: 'site' | 'csv'): void {
+    if (source === next) return
+    source = next
+    const csv = next === 'csv'
+    siteSource.classList.toggle('active', !csv)
+    csvSource.classList.toggle('active', csv)
+    importCsvButton.classList.toggle('hidden', !csv)
+    clearCsvButton.classList.toggle('hidden', !csv)
+    softwareField.classList.toggle('hidden', csv)
+    unapprovedLabel.classList.toggle('hidden', csv)
+    refreshButton.classList.toggle('hidden', csv)
+    selfButton.classList.toggle('hidden', csv)
+    if (csv) {
+      requestVersion += 1
+      const previousController = controller
+      controller = null
+      pendingUnapproved = false
+      previousController?.abort()
+      state.loading = false
+    }
+    nameNode.textContent = csv ? '本地 CSV' : siteName
+    idNode.textContent = csv ? `${csvImports.length} 个文件` : `ID ${state.userId}`
+    document.title = `${nameNode.textContent} · 玩家数据 · 元神助手`
+    state.message = ''
+    renderCsvFiles()
+    // 网站记录为空时也重建，避免在等待请求期间残留 CSV。
+    rebuild()
+    if (!csv) {
+      if (state.rows.length === 0) void runLoad(false)
+      else if (state.includeUnapproved) void loadUnapproved()
+    }
+  }
+
+  async function importCsvFiles(files: File[]): Promise<void> {
+    if (files.length === 0) return
+    // 后一次导入取代尚未提交的批次；已完成的批次继续保留。
+    const request = ++csvImportVersion
+    const current = (): boolean => request === csvImportVersion
+    const staged: CsvImport[] = []
+    let nextIdBase = csvIdBase
+    const errors: string[] = []
+    const fileErrors: string[] = []
+    for (const file of files) {
+      if (file.size > 20 * 1024 * 1024) {
+        errors.push(`${file.name}：超过 20 MB`)
+        continue
+      }
+      try {
+        const text = await file.text()
+        if (!current()) return
+        const result = parseStatsCsv(text, nextIdBase)
+        for (const error of result.errors) {
+          errors.push(`${file.name} 第 ${error.line} 行：${error.message}`)
+        }
+        if (result.videos.length === 0) {
+          errors.push(`${file.name}：没有有效数据`)
+          continue
+        }
+        nextIdBase += result.videos.length
+        staged.push({
+          name: file.name,
+          total: result.total,
+          videos: result.videos,
+          invalidRows: result.errors.length,
+        })
+      } catch (error) {
+        if (!current()) return
+        const message = `${file.name}：${errorMessage(error)}`
+        errors.push(message)
+        fileErrors.push(message)
+      }
+    }
+    if (!current()) return
+    // 整批读取完成且仍有效后再提交，清除操作不会留下半批记录。
+    const importedGames = nextIdBase - csvIdBase
+    csvIdBase = nextIdBase
+    csvImports.push(...staged)
+    renderCsvResult(
+      `本次导入：成功 ${staged.length} 个文件、${formatCount(importedGames)} 局；失败 ${files.length - staged.length} 个文件` +
+        (errors.length > 0 ? `；${errors.length} 项问题` : '') +
+        (fileErrors.length > 0 ? `。${fileErrors.slice(0, 3).join('；')}` : ''),
+      errors,
+    )
+    if (staged.length === 0) return
+    if (source !== 'csv') setSource('csv')
+    else {
+      idNode.textContent = `${csvImports.length} 个文件`
+      renderCsvFiles()
+      rebuild()
+    }
   }
 
   function render(): void {
     const current = options()
     const counted = state.videos.filter((video) => eligible(video, current)).length
-    const parts = [
-      `录像 ${formatCount(state.rows.length)}`,
-      `计入 ${formatCount(counted)}`,
-    ]
-    parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
-    if (state.fromCache) parts.push('（缓存）')
+    const parts =
+      source === 'csv'
+        ? [`CSV ${csvImports.length} 个文件`, `录像 ${formatCount(state.videos.length)}`]
+        : [`录像 ${formatCount(state.rows.length)}`]
+    parts.push(`计入 ${formatCount(counted)}`)
+    if (source === 'site') {
+      parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
+      if (state.fromCache) parts.push('（缓存）')
+    }
     metaNode.textContent = parts.join(' · ')
 
-    notice.classList.toggle('hidden', !state.includeUnapproved)
-    notice.textContent = state.includeUnapproved
-      ? '含未过审：a 未审核 / b 冻结 / d 标识不符 / e 外部审核 都算进来了，成绩仅自用，和站点 PB 不再一致。'
-      : ''
+    notice.classList.toggle('hidden', source !== 'site' || !state.includeUnapproved)
+    notice.textContent =
+      source === 'site' && state.includeUnapproved
+        ? '含未过审：a 未审核 / b 冻结 / d 标识不符 / e 外部审核 都算进来了，成绩仅自用，和站点 PB 不再一致。'
+        : ''
 
-    refreshButton.disabled = state.loading
-    cancelButton.classList.toggle('hidden', !state.loading)
+    refreshButton.disabled = state.loading || source === 'csv'
+    cancelButton.classList.toggle('hidden', !state.loading || source === 'csv')
     status.textContent = state.message
 
     for (const stat of PB_STATS) {
@@ -363,7 +551,9 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     }
 
     for (const level of LEVELS) {
-      const list = byLevel.get(level) ?? []
+      const list = (byLevel.get(level) ?? []).filter(
+        (row) => Number.isSafeInteger(row.bv) && row.bv >= 1 && row.bv <= MAX_BV[level],
+      )
       const view = pbLevels.get(level)!
       view.grid.replaceChildren()
       view.empty.classList.toggle('hidden', list.length > 0)
@@ -383,15 +573,14 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
               mid: medianOf(dates),
               max: dates[dates.length - 1] as number,
             }
-      const firstRow = Math.floor(list[0]!.bv / 10) * 10
-      const lastRow = Math.floor(list[list.length - 1]!.bv / 10) * 10
+      const starts = [...new Set(list.map((row) => Math.floor(row.bv / 10) * 10))]
 
       view.grid.append(el('span', 'pb-corner'))
       for (let digit = 0; digit < 10; digit += 1) {
         view.grid.append(el('span', 'pb-head', String(digit)))
       }
 
-      for (let start = firstRow; start <= lastRow; start += 10) {
+      for (const start of starts) {
         view.grid.append(el('span', 'pb-rowlabel', `${start}–${start + 9}`))
         for (let bv = start; bv < start + 10; bv += 1) {
           view.grid.append(pbCell(byBv.get(bv), dateRange))
@@ -459,17 +648,23 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   }
 
   async function runLoad(force: boolean): Promise<void> {
-    if (state.loading) return
-    controller = new AbortController()
+    if (source === 'csv' || state.loading) return
+    const localController = new AbortController()
+    controller = localController
+    const request = ++requestVersion
+    const current = (): boolean => source === 'site' && request === requestVersion
     const messageAtStart = state.message
     state.message = ''
     setLoading(true, '正在获取录像列表…')
     try {
       const loaded = await loadPlayer(state.userId, {
         force,
-        signal: controller.signal,
-        onProgress: ({ done, total }) => setLoading(true, `正在拉取明细：${done}/${total} 批`),
+        signal: localController.signal,
+        onProgress: ({ done, total }) => {
+          if (current()) setLoading(true, `正在拉取明细：${done}/${total} 批`)
+        },
       })
+      if (!current()) return
       state.rows = loaded.rows
       state.updatedAt = loaded.fetchedAt
       state.fromCache = loaded.fromCache
@@ -481,13 +676,16 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
       rebuild()
       setLoading(false)
     } catch (error) {
+      if (!current()) return
       state.message = isAbortError(error) ? '已取消' : errorMessage(error)
       setLoading(false)
     } finally {
-      controller = null
-      if (pendingUnapproved && unapprovedCheck.input.checked) {
-        pendingUnapproved = false
-        void loadUnapproved()
+      if (current()) {
+        controller = null
+        if (pendingUnapproved && unapprovedCheck.input.checked) {
+          pendingUnapproved = false
+          void loadUnapproved()
+        }
       }
     }
   }
@@ -517,6 +715,7 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
   }
 
   async function loadUnapproved(): Promise<void> {
+    if (source === 'csv') return
     if (state.loading) {
       pendingUnapproved = true
       return
@@ -531,25 +730,33 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
 
     const localController = new AbortController()
     controller = localController
+    const request = ++requestVersion
+    const current = (): boolean => source === 'site' && request === requestVersion
     const previous = state.message
     setLoading(true, `正在补抓未过审录像：0/${Math.ceil(ids.length / 100)} 批`)
     try {
       const result = await ensureDetails(state.userId, state.rows, ids, {
         signal: localController.signal,
-        onProgress: ({ done, total }) => setLoading(true, `正在补抓未过审录像：${done}/${total} 批`),
+        onProgress: ({ done, total }) => {
+          if (current()) setLoading(true, `正在补抓未过审录像：${done}/${total} 批`)
+        },
       })
+      if (!current()) return
       state.rows = result.rows
       state.message = previous
       rebuild()
       setLoading(false)
     } catch (error) {
+      if (!current()) return
       state.message = isAbortError(error) ? '已取消' : errorMessage(error)
       setLoading(false)
     } finally {
-      if (controller === localController) controller = null
-      if (pendingUnapproved && unapprovedCheck.input.checked) {
-        pendingUnapproved = false
-        void loadUnapproved()
+      if (current()) {
+        controller = null
+        if (pendingUnapproved && unapprovedCheck.input.checked) {
+          pendingUnapproved = false
+          void loadUnapproved()
+        }
       }
     }
   }
@@ -584,9 +791,12 @@ export async function mountPlayerStats(root: HTMLElement): Promise<void> {
     const info = await fetchUserInfo(userId)
     if (info) {
       const name = info.username || info.realname || `#${userId}`
-      nameNode.textContent = name
-      idNode.textContent = `ID ${userId}`
-      document.title = `${name} · 玩家数据 · 元神助手`
+      siteName = name
+      if (source === 'site') {
+        nameNode.textContent = name
+        idNode.textContent = `ID ${userId}`
+        document.title = `${name} · 玩家数据 · 元神助手`
+      }
     }
   } catch {
     // 名字拿不到不影响主流程。

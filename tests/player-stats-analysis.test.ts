@@ -25,6 +25,7 @@ import {
   yearStats,
 } from '../src/features/player-stats/analysis'
 import type { Video } from '../src/features/player-stats/model'
+import { BV_RATE } from '../src/features/player-stats/gc-coefficients'
 
 let nextId = 1
 
@@ -502,27 +503,55 @@ describe('年汇总与 GC 指标', () => {
     expect(year.avgCls).toBeCloseTo(3)
   })
 
-  it('GC 指标按 bv 分档给出 asb / 战力 / 典型时', () => {
+  it('GC 指标按 3BV 分段给出 ASB / 分段战力 / 分段典型时', () => {
     const games = analyzeGames([
       video({ id: 1, level: 'e', bv: 150, timems: 50000 }),
       video({ id: 2, level: 'e', bv: 150, timems: 55000 }),
     ])
     const stats = gcStats(games)
     const expert = stats.find((item) => item.level === 'e')
-    expect(expert?.asb).toBeGreaterThan(0)
-    expect(expert?.power).toBeGreaterThan(0)
-    expect(expert?.typicalTime).toBeGreaterThan(0)
-    expect(expert?.bins[0]?.start).toBe(150)
-    expect(expert?.bins[0]?.end).toBe(159)
-    expect(expert?.bins[0]?.count).toBe(2)
+    const rates = Array.from({ length: 10 }, (_, index) => BV_RATE[150 + index + 82 - 1]!)
+    const rateSum = rates.reduce((sum, value) => sum + value, 0)
+    const expectedPower = (3 * rates[0]!) / rateSum
+    const expectedBv = rates.reduce((sum, rate, index) => sum + (150 + index) * rate, 0) / rateSum
+    expect(expert?.asb).toBeCloseTo(3)
+    expect(expert?.power).toBeCloseTo((3 * rates[0]!) / 100)
+    expect(expert?.typicalTime).toBeCloseTo(expectedBv / expectedPower)
+    const segment = expert?.segments.find((item) => item.start === 150)
+    expect(segment?.end).toBe(159)
+    expect(segment?.count).toBe(2)
+    expect(segment?.power).toBeCloseTo(expectedPower)
+    expect(segment?.bv).toBeCloseTo(expectedBv)
+    expect(segment?.time).toBeCloseTo(expectedBv / expectedPower)
   })
 
-  it('高级 3BV 279 仍然有战力，不静默归零', () => {
-    const games = analyzeGames([video({ id: 1, level: 'e', bv: 279, timems: 90000 })])
-    const expert = gcStats(games).find((item) => item.level === 'e')
-    expect(expert?.power).toBeGreaterThan(0)
-    expect(expert?.typicalTime).toBeGreaterThan(0)
+  it.each([
+    ['i', 134, 100, 104.03],
+    ['e', 278, 220, 226.96],
+  ] as const)('%s 在 %i 以上 rate 为 0，末段典型 3BV 正确', (level, limit, start, typicalBv) => {
+    const atLimit = gcStats(analyzeGames([video({ level, bv: limit, timems: 90000 })])).find(
+      (item) => item.level === level,
+    )
+    const aboveLimit = gcStats(
+      analyzeGames([video({ level, bv: limit + 1, timems: 90000 })]),
+    ).find((item) => item.level === level)
+    expect(atLimit?.power).toBeGreaterThan(0)
+    expect(aboveLimit?.power).toBe(0)
+    expect(aboveLimit?.typicalTime).toBe(0)
+    expect(atLimit?.segments.find((item) => item.start === start)?.bv).toBeCloseTo(typicalBv, 1)
   })
+
+  it('初级 2–9 计入战力和典型时，但不计入 ASB', () => {
+    const games = analyzeGames([video({ id: 1, level: 'b', bv: 5, timems: 1000 })], {}, 1)
+    const beginner = gcStats(games).find((item) => item.level === 'b')
+    const segment = beginner?.segments.find((item) => item.start === 2)
+    expect(beginner?.asb).toBe(0)
+    expect(segment?.count).toBe(1)
+    expect(segment?.power).toBeGreaterThan(0)
+    expect(segment?.time).toBeGreaterThan(0)
+    expect(beginner?.typicalTime).toBeCloseTo(segment?.time ?? 0)
+  })
+
 })
 
 describe('局数口径', () => {

@@ -6,6 +6,7 @@ import {
   STNB_COEFFICIENT,
   TOP_STATS,
   isLevel,
+  compareVideoOrder,
 } from './model'
 import type {
   AnalyzeOptions,
@@ -57,17 +58,9 @@ function levelIndex(level: string): number {
   return index < 0 ? LEVELS.length : index
 }
 
-/** PB 的先后：用时短的优先，同用时按上传时间、ID 升序。 */
-function faster(a: Video, b: Video): boolean {
-  if (a.timems !== b.timems) return a.timems < b.timems
-  const at = uploadTime(a)
-  const bt = uploadTime(b)
-  if (at !== bt) return at < bt
-  return a.id < b.id
-}
-
+/** PB 的先后：用时、上传时间升序；同分按网站 ID 或 CSV 导入顺序。 */
 function compareTime(a: Video, b: Video): number {
-  return a.timems - b.timems || uploadTime(a) - uploadTime(b) || a.id - b.id
+  return a.timems - b.timems || uploadTime(a) - uploadTime(b) || compareVideoOrder(a, b)
 }
 
 function compareMetric(stat: TopStat): (a: Video, b: Video) => number {
@@ -110,7 +103,7 @@ export function eligible(video: Video, options: AnalyzeOptions = {}): boolean {
   if (video.bv === null || video.timems <= 0) return false
   if (!options.includeUnapproved && video.state !== APPROVED_STATE) return false
   if (video.ongoing_tournament) return false
-  if (options.nfOnly === true && video.right_ce !== 0) return false
+  if (options.nfOnly === true && !(video.csvNf ?? (video.right_ce === 0))) return false
   if (
     options.software !== undefined &&
     options.software !== 'all' &&
@@ -128,7 +121,7 @@ export function computePb(videos: Video[], options: AnalyzeOptions = {}): PbRow[
     if (!eligible(video, options)) continue
     const key = `${video.level}:${video.bv}`
     const current = best.get(key)
-    if (!current || faster(video, current)) best.set(key, video)
+    if (!current || compareTime(video, current) < 0) best.set(key, video)
   }
 
   return [...best.values()]
