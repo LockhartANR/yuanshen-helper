@@ -2,13 +2,15 @@ import { bvsOf, eligible, stnbOf } from './compute'
 import { BV_RATE } from './gc-coefficients'
 import type { AnalyzeOptions, Level, Video } from './model'
 import { LEVELS, isLevel, compareVideoOrder } from './model'
+import { effectiveVideoDate } from './video-date'
+import type { EffectiveVideoDate } from './video-date'
 
 /** 工作簿里绝大多数榜单要求 3BV > 9。 */
 const MIN_ANALYSIS_BV = 10
 
 const EPSILON = 1e-9
 
-export interface AnalysisGame {
+export interface AnalysisGame extends EffectiveVideoDate {
   video: Video
   level: Level
   bv: number
@@ -31,8 +33,6 @@ export interface AnalysisGame {
   hasCl: boolean
   hasCe: boolean
   hasRight: boolean
-  /** 结束时间（毫秒），缺失时退回上传时间。 */
-  date: number
   nf: boolean
   /** 是否是「当时」的个人最好成绩，以及被打破的旧纪录。 */
   pb: boolean
@@ -152,13 +152,6 @@ function sumNumbers(values: Array<number | null>): number {
   return total
 }
 
-function videoDate(video: Video): number {
-  const end = Date.parse(video.end_time ?? '')
-  if (!Number.isNaN(end)) return end
-  const upload = Date.parse(video.upload_time ?? '')
-  return Number.isNaN(upload) ? 0 : upload
-}
-
 export function buildGames(
   videos: Video[],
   options: AnalyzeOptions = {},
@@ -197,7 +190,7 @@ export function buildGames(
         (value) => typeof value === 'number' && Number.isFinite(value),
       ),
       hasRight: typeof video.right === 'number' && Number.isFinite(video.right),
-      date: videoDate(video),
+      ...effectiveVideoDate(video),
       nf: video.csvNf ?? (video.right === 0),
       pb: false,
       pbPrev: null,

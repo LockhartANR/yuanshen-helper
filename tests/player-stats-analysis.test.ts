@@ -80,9 +80,27 @@ describe('buildGames', () => {
     expect(game?.date).toBe(Date.parse('2025-01-01T00:00:00.000Z'))
   })
 
-  it('end_time 缺失时退回上传时间', () => {
-    const [game] = buildGames([video({ end_time: null, upload_time: '2025-02-03T00:00:00.000Z' })])
-    expect(game?.date).toBe(Date.parse('2025-02-03T00:00:00.000Z'))
+  it.each([null, '', 'invalid', '1970-01-01T00:00:00.000Z', '1969-12-31T23:59:59.000Z'])(
+    '结束时间 %s 无效时统一回退上传日期并保留来源',
+    (end_time) => {
+      const [game] = buildGames([video({ end_time, upload_time: '2025-02-03T00:00:00.000Z' })])
+      expect(game).toMatchObject({
+        date: Date.parse('2025-02-03T00:00:00.000Z'),
+        dateFromUpload: true,
+        undated: false,
+      })
+    },
+  )
+
+  it('有效结束时间优先；两个日期都无效时标记为未定日期', () => {
+    const [valid] = buildGames([video({ upload_time: '2025-02-03T00:00:00.000Z' })])
+    expect(valid).toMatchObject({
+      date: Date.parse('2025-01-01T00:00:00.000Z'), dateFromUpload: false, undated: false,
+    })
+    for (const upload_time of ['', 'invalid', '1970-01-01T00:00:00.000Z', '1969-12-31T23:59:59.000Z']) {
+      const [undated] = buildGames([video({ end_time: null, upload_time })])
+      expect(undated).toMatchObject({ date: 0, dateFromUpload: false, undated: true })
+    }
   })
 })
 

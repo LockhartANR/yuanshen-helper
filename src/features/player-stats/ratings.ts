@@ -8,6 +8,13 @@ export type LsfMetric = 't' | 'b' | 's'
 /** 18 个软实力榜（普通 / NF × 三难度 × 三项）的锚点。 */
 export type LsfAnchors = Record<string, number>
 
+/** 每个软实力榜取前五条。 */
+export const TOP5_SIZE = 5
+/** 用时不足五条时的补位值（秒），与站点 / 工作簿一致。 */
+const TIME_PAD = 999.999
+/** 单级软实力的固定 100 尺度换算到综合 4000 尺度的倍数。 */
+const LSF_LEVEL_SCALE = 40
+
 export interface TopAverages {
   time: number
   bvs: number
@@ -16,17 +23,32 @@ export interface TopAverages {
 
 export interface LevelRating {
   level: Level
+  /** 该级软实力，单级 100 尺度。 */
   soft: number
+  /** 该级 NF 软实力，单级 100 尺度。 */
   nfSoft: number
+  /** 该级对综合 LSF 的贡献：级别权重 × (0.97 × soft + 0.03 × nfSoft)。 */
+  lsf: number
+  /** 单级定阶称号（不含进度）。 */
+  title: string
+  /** 单级定阶的阶内进度，最高称号允许外推。 */
+  progress: number
+  nfTitle: string
+  nfProgress: number
 }
 
 export interface RatingSnapshot {
   soft: number
   nfSoft: number
   lsf: number
+  /** 综合定阶称号，进度单独保存。 */
   title: string
+  /** 综合定阶的阶内进度，最高称号允许外推。 */
   progress: number
+  /** 综合 NF定阶称号。 */
   nfTitle: string
+  /** 综合 NF定阶的阶内进度，最高称号允许外推。 */
+  nfProgress: number
   levels: LevelRating[]
 }
 
@@ -81,13 +103,21 @@ export function anchorKey(mode: LsfMode, level: Level, metric: LsfMetric): strin
   return `${mode}:${level}${metric}`
 }
 
+/** 用已按优劣排好的前五值计算均值；补位规则与求和顺序与 `top5Average` 完全一致。 */
+export function top5AverageOf(top: number[], metric: LsfMetric): number {
+  const pad = metric === 't' ? TIME_PAD : 0
+  let sum = 0
+  for (const value of top) sum += value
+  return (sum + (TOP5_SIZE - top.length) * pad) / TOP5_SIZE
+}
+
 /** 单个榜单的 top5 均值；不足五条按站点规则补位。 */
 export function top5Average(values: number[], metric: LsfMetric): number {
   const ascending = metric === 't'
-  const top = [...values].sort((a, b) => (ascending ? a - b : b - a)).slice(0, 5)
-  const pad = ascending ? 999.999 : 0
-  const sum = top.reduce((total, value) => total + value, 0)
-  return (sum + (5 - top.length) * pad) / 5
+  const top = [...values]
+    .sort((a, b) => (ascending ? a - b : b - a))
+    .slice(0, TOP5_SIZE)
+  return top5AverageOf(top, metric)
 }
 
 function averageTop(
@@ -106,14 +136,16 @@ function topAverages(games: AnalysisGame[]): TopAverages {
   }
 }
 
-function singleSoft(metric: LsfMetric, value: number, anchor: number | undefined): number {
+/** 单项软实力：用时 A/V，3BVS V/A，STNB (V/A)^(1/1.7)。 */
+export function singleSoft(metric: LsfMetric, value: number, anchor: number | undefined): number {
   if (!anchor || anchor <= 0) return 0
   if (metric === 't') return value > 0 ? anchor / value : 0
   if (metric === 'b') return value / anchor
   return (value / anchor) ** (1 / 1.7)
 }
 
-function levelSoft(
+/** 单级软实力：三项单项 × 指标权重求和，单级 100 尺度。 */
+export function levelSoft(
   level: Level,
   averages: TopAverages,
   anchors: LsfAnchors,
@@ -137,6 +169,55 @@ function combinedSoft(
     (sum, item) => sum + (mode === 'std' ? item.soft : item.nfSoft) * levelWeights[item.level],
     0,
   )
+}
+
+/**
+ * 单级评级：软实力 / NF软实力保留单级尺度，LSF 为该级贡献（已乘级别权重）。
+ * 单级定阶把单级 100 尺度按固定倍数换算到 4000 尺度，因此不随级别权重变化。
+ */
+export function levelRating(
+  level: Level,
+  soft: number,
+  nfSoft: number,
+  anchors: LsfAnchors,
+  levelWeights: Record<Level, number> = WORKBOOK_LEVEL_WEIGHTS,
+): LevelRating {
+  const title = titleFor(soft * LSF_LEVEL_SCALE, anchors[anchorKey('std', 'e', 't')])
+  const nfTitle = titleFor(nfSoft * LSF_LEVEL_SCALE, anchors[anchorKey('nf', 'e', 't')])
+  return {
+    level,
+    soft,
+    nfSoft,
+    lsf: levelWeights[level] * (soft * 0.97 + nfSoft * 0.03),
+    title: title.title,
+    progress: title.progress,
+    nfTitle: nfTitle.title,
+    nfProgress: nfTitle.progress,
+  }
+}
+
+/** 由三级评级汇总综合软实力、综合 LSF 与综合定阶。 */
+export function snapshotFromLevels(
+  levels: LevelRating[],
+  anchors: LsfAnchors,
+  levelWeights: Record<Level, number> = WORKBOOK_LEVEL_WEIGHTS,
+): RatingSnapshot {
+  const soft = combinedSoft(levels, 'std', levelWeights)
+  const nfSoft = combinedSoft(levels, 'nf', levelWeights)
+  // 各级 LSF 贡献相加即综合 LSF：三级相加等于综合，不允许另算一套。
+  const lsf = levels.reduce((sum, item) => sum + item.lsf, 0)
+  const title = titleFor(soft, anchors[anchorKey('std', 'e', 't')])
+  const nfTitle = titleFor(nfSoft, anchors[anchorKey('nf', 'e', 't')])
+  return {
+    soft,
+    nfSoft,
+    lsf,
+    title: title.title,
+    progress: title.progress,
+    nfTitle: nfTitle.title,
+    nfProgress: nfTitle.progress,
+    levels,
+  }
 }
 
 /** 等价 et 映射到称号；区间内按软实力线性插值。 */
@@ -175,34 +256,15 @@ export function ratingSnapshot(
     const levelGames = games.filter(
       (game) => game.level === level && game.bv >= floors[level],
     )
+    if (levelGames.length === 0) return levelRating(level, 0, 0, anchors, levelWeights)
     const nfGames = levelGames.filter((game) => game.nf)
-    if (levelGames.length === 0) {
-      return { level, soft: 0, nfSoft: 0 }
-    }
-    return {
+    return levelRating(
       level,
-      soft: levelSoft(level, topAverages(levelGames), anchors, 'std', weights),
-      nfSoft: levelSoft(level, topAverages(nfGames), anchors, 'nf', weights),
-    }
+      levelSoft(level, topAverages(levelGames), anchors, 'std', weights),
+      levelSoft(level, topAverages(nfGames), anchors, 'nf', weights),
+      anchors,
+      levelWeights,
+    )
   })
-  const soft = combinedSoft(levels, 'std', levelWeights)
-  const nfSoft = combinedSoft(levels, 'nf', levelWeights)
-  // 与原表一致：每个级别先合并普通 / NF，再按级别权重求和。
-  const lsf = levels.reduce(
-    (sum, item) =>
-      sum +
-      levelWeights[item.level] * (item.soft * 0.97 + item.nfSoft * 0.03),
-    0,
-  )
-  const title = titleFor(soft, anchors[anchorKey('std', 'e', 't')])
-  const nfTitle = titleFor(nfSoft, anchors[anchorKey('nf', 'e', 't')])
-  return {
-    soft,
-    nfSoft,
-    lsf,
-    title: `${title.title} ${title.progress.toFixed(1)}`,
-    progress: title.progress,
-    nfTitle: `${nfTitle.title} ${nfTitle.progress.toFixed(1)}`,
-    levels,
-  }
+  return snapshotFromLevels(levels, anchors, levelWeights)
 }

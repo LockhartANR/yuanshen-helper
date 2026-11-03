@@ -240,7 +240,7 @@ export async function mountPlayerStats(
   const topTables: { nf: boolean; body: HTMLElement }[] = []
   for (const nf of [false, true]) {
     const box = el('div', 'top5-box')
-    box.append(el('h3', 'top5-title', nf ? '仅 NF' : '全部录像'))
+    box.append(el('h3', 'top5-title', nf ? 'NF前端成绩' : '前端成绩'))
     const table = el('table', 'data-table top5-table')
     const head = el('thead')
     const headRow = el('tr')

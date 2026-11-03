@@ -3,6 +3,9 @@ import { analyzeGames } from '../src/features/player-stats/analysis'
 import type { Video } from '../src/features/player-stats/model'
 import { STNB_COEFFICIENT } from '../src/features/player-stats/model'
 import {
+  WORKBOOK_ANCHORS,
+  WORKBOOK_LEVEL_WEIGHTS,
+  WORKBOOK_SOFT_WEIGHTS,
   anchorKey,
   ratingSnapshot,
   titleFor,
@@ -79,7 +82,68 @@ describe('ratingSnapshot', () => {
     expect(snapshot.soft).toBeCloseTo(4000)
     expect(snapshot.levels.every((level) => Math.abs(level.soft - 100) < 1e-9)).toBe(true)
     expect(snapshot.nfSoft).toBeCloseTo(0)
-    expect(snapshot.nfTitle).toBe('新手 0.0')
+    expect(snapshot.nfTitle).toBe('新手')
+    expect(snapshot.nfProgress).toBe(0)
     expect(snapshot.lsf).toBeCloseTo(4000 * 0.97)
+  })
+
+  it('每级 LSF 贡献相加等于综合 LSF，且不随级别权重改变口径', () => {
+    const videos: Video[] = []
+    const times: Record<'b' | 'i' | 'e', number[]> = {
+      b: [9, 11, 13, 15, 17, 19],
+      i: [30, 34, 38, 42, 46, 50],
+      e: [120, 140, 160, 180, 200, 220],
+    }
+    for (const level of ['b', 'i', 'e'] as const) {
+      const bv = level === 'b' ? 20 : level === 'i' ? 60 : 150
+      for (const [index, time] of times[level].entries()) {
+        videos.push(
+          video({
+            level,
+            bv,
+            timems: time * 1000,
+            right: index === 0 ? 0 : 2,
+            right_ce: index === 0 ? 0 : 2,
+          }),
+        )
+      }
+    }
+    const games = analyzeGames(videos)
+    const snapshot = ratingSnapshot(games, WORKBOOK_ANCHORS)
+    const sum = snapshot.levels.reduce((total, level) => total + level.lsf, 0)
+    expect(sum).toBeCloseTo(snapshot.lsf, 9)
+    for (const item of snapshot.levels) {
+      expect(item.lsf).toBeCloseTo(
+        WORKBOOK_LEVEL_WEIGHTS[item.level] * (item.soft * 0.97 + item.nfSoft * 0.03),
+        9,
+      )
+    }
+  })
+
+  it('单级定阶按固定 100 尺度换算，改级别权重不影响称号', () => {
+    const videos: Video[] = []
+    for (const level of ['b', 'i', 'e'] as const) {
+      const bv = level === 'b' ? 20 : level === 'i' ? 60 : 150
+      for (let index = 0; index < 5; index += 1) {
+        videos.push(video({ level, bv, timems: (level === 'e' ? 40 : 10) * 1000 }))
+      }
+    }
+    const games = analyzeGames(videos)
+    const base = ratingSnapshot(games, WORKBOOK_ANCHORS)
+    const doubled = ratingSnapshot(games, WORKBOOK_ANCHORS, WORKBOOK_SOFT_WEIGHTS, {
+      b: 12,
+      i: 28,
+      e: 40,
+    })
+    const etAnchor = WORKBOOK_ANCHORS[anchorKey('std', 'e', 't')]
+    const nfEtAnchor = WORKBOOK_ANCHORS[anchorKey('nf', 'e', 't')]
+    for (let index = 0; index < 3; index += 1) {
+      const level = base.levels[index]!
+      expect(doubled.levels[index]?.title).toBe(level.title)
+      expect(doubled.levels[index]?.lsf).toBeCloseTo(level.lsf * 2, 9)
+      expect(level.title).toBe(titleFor(level.soft * 40, etAnchor).title)
+      expect(level.progress).toBeCloseTo(titleFor(level.soft * 40, etAnchor).progress, 12)
+      expect(level.nfTitle).toBe(titleFor(level.nfSoft * 40, nfEtAnchor).title)
+    }
   })
 })
