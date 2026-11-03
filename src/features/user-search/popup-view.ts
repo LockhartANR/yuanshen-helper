@@ -11,6 +11,7 @@ import {
   debounce,
   el,
   errorMessage,
+  openLocalCsvTab,
   openOptionsPage,
   openPlayerStatsTab,
   openPlayerTab,
@@ -201,6 +202,20 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   identifierToggle.append(el('span', 'toggle-glyph', '标'), el('span', 'toggle-slash'))
   searchRow.append(searchBox, identifierToggle)
 
+  const csvEntry = el('button', 'csv-entry')
+  csvEntry.type = 'button'
+  csvEntry.title = '打开独立本地 CSV 分析，不需要玩家 ID'
+  csvEntry.append(
+    icon('chart'),
+    el('span', 'csv-entry-label', '本地 CSV 分析'),
+    el('span', 'csv-entry-note', '不需要玩家 ID'),
+  )
+  csvEntry.addEventListener('click', () => {
+    void openLocalCsvTab()
+      .then(() => window.close())
+      .catch(() => setHint('打开本地 CSV 分析失败，请稍后重试'))
+  })
+
   const results = el('main', 'results')
   results.id = 'search-results'
   results.setAttribute('role', 'listbox')
@@ -219,7 +234,7 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   syncButton.append(syncIcon, syncLabel)
   statusbar.append(statusText, syncButton)
 
-  root.append(header, searchRow, results, hint, statusbar)
+  root.append(header, searchRow, csvEntry, results, hint, statusbar)
   renderIdentifierToggle()
   identifierToggle.addEventListener('click', () => void toggleIdentifierLookup())
 

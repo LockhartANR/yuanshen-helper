@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountPlayerStats } from '../src/features/player-stats/view'
 import { loadPlayer, ensureDetails } from '../src/features/player-stats/service'
+import { fetchUserInfo } from '../src/features/player-stats/api'
 import type { LoadedPlayer } from '../src/features/player-stats/service'
 import { parseStatsCsv } from '../src/features/player-stats/csv'
 
-const { updateAnalysis } = vi.hoisted(() => ({ updateAnalysis: vi.fn() }))
+const { updateAnalysis, createAnalysisViewMock } = vi.hoisted(() => ({
+  updateAnalysis: vi.fn(),
+  createAnalysisViewMock: vi.fn(),
+}))
 
 vi.mock('../src/features/player-stats/service', () => ({ loadPlayer: vi.fn(), ensureDetails: vi.fn() }))
 vi.mock('../src/features/player-stats/api', () => ({ fetchUserInfo: vi.fn(async () => null) }))
@@ -16,7 +20,14 @@ vi.mock('../src/features/player-stats/colors', () => ({
 }))
 vi.mock('../src/features/player-stats/software-icon', () => ({ softwareIcon: () => null }))
 vi.mock('../src/features/player-stats/analysis-view', () => ({
-  createAnalysisView: () => ({ root: document.createElement('section'), update: updateAnalysis }),
+  createAnalysisView: (options: unknown) => {
+    createAnalysisViewMock(options)
+    return {
+      root: document.createElement('section'),
+      update: updateAnalysis,
+      destroy: vi.fn(),
+    }
+  },
 }))
 
 // 只替代本页使用的 DOM 基础操作；事件直接驱动真实 mountPlayerStats 和异步加载逻辑。
@@ -291,5 +302,130 @@ describe('玩家页 CSV 集成', () => {
     await importFiles([csvFile('sparse.csv', `${CSV}\n${ROW.replace(',12,2.40,', ',54,2.40,')}`)])
     const labels = root.all().filter((node) => node.classList.contains('pb-rowlabel'))
     expect(labels.map((node) => node.textContent)).toEqual(['10–19', '50–59'])
+  })
+})
+
+describe('独立 CSV 启动模式', () => {
+  async function mountCsv(): Promise<void> {
+    vi.stubGlobal('location', { search: '?source=csv' })
+    await mount()
+  }
+
+  it('首次打开不调用玩家接口，显示空态并隐藏网站控件', async () => {
+    await mountCsv()
+    expect(loadPlayer).not.toHaveBeenCalled()
+    expect(ensureDetails).not.toHaveBeenCalled()
+    expect(fetchUserInfo).not.toHaveBeenCalled()
+    expect(createAnalysisViewMock).toHaveBeenLastCalledWith({
+      autoSiteAnchors: false,
+    })
+    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
+    expect(document.title).toBe('本地 CSV · 元神助手')
+    expect(find((node) => node.classList.contains('csv-empty')).visible()).toBe(true)
+    expect(button('选择 CSV 文件').visible()).toBe(true)
+    expect(button('网站数据').visible()).toBe(false)
+    expect(button('本地 CSV').visible()).toBe(false)
+    expect(button('刷新').visible()).toBe(false)
+    expect(root.all().filter((node) => node.tag === 'button' && node.textContent === '我的成绩'))
+      .toHaveLength(0)
+    expect(find((node) => node.classList.contains('page-tabs')).visible()).toBe(false)
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+  })
+
+  it('导入后可切换成绩概况，清除后仍留在 CSV 空态', async () => {
+    await mountCsv()
+    const empty = find((node) => node.classList.contains('csv-empty'))
+    await importFiles([csvFile('ok.csv')])
+    expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), { csv: true })
+    expect(empty.visible()).toBe(false)
+    expect(button('成绩概况').visible()).toBe(true)
+    expect(button('赛博大表').visible()).toBe(true)
+
+    button('成绩概况').click()
+    expect(find((node) => node.classList.contains('pb-grids')).visible()).toBe(true)
+
+    button('清除 CSV').click()
+    expect(empty.visible()).toBe(true)
+    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+    expect(loadPlayer).not.toHaveBeenCalled()
+  })
+
+  it('首次读取期间可取消导入，旧批次失效并回到空态', async () => {
+    await mountCsv()
+    const empty = find((node) => node.classList.contains('csv-empty'))
+    const slow = deferred<string>()
+    startImport([{ ...csvFile('slow.csv'), text: () => slow.promise }])
+
+    expect(find((node) => node.classList.contains('csv-empty-note')).visible()).toBe(true)
+    const cancel = button('取消导入')
+    expect(cancel.visible()).toBe(true)
+    cancel.click()
+    expect(cancel.visible()).toBe(false)
+    expect(find((node) => node.classList.contains('csv-empty-note')).visible()).toBe(false)
+    expect(empty.visible()).toBe(true)
+    expect(importStatus().textContent).toBe('')
+
+    slow.resolve(CSV)
+    await slow.promise
+    await Promise.resolve()
+    // 旧读取完成后不能提交数据、恢复提示或改变页面。
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+    expect(empty.visible()).toBe(true)
+    expect(importStatus().textContent).toBe('')
+    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
+  })
+})
+
+describe('站内嵌入模式', () => {
+  it('自动带入玩家 ID，只保留赛博大表与加载操作', async () => {
+    vi.stubGlobal('location', { search: '?id=16&embed=analysis' })
+    await mount()
+    expect(loadPlayer).toHaveBeenCalledWith(16, expect.objectContaining({ force: false }))
+    expect(createAnalysisViewMock).toHaveBeenLastCalledWith({
+      autoSiteAnchors: true,
+    })
+    expect(find((node) => node.tag === 'h1').textContent).toBe('#16')
+    expect(find((node) => node.classList.contains('player-id')).textContent).toBe('ID 16')
+    expect(find((node) => node.classList.contains('page-tabs')).visible()).toBe(false)
+    expect(button('成绩概况').visible()).toBe(false)
+    expect(button('导入 CSV').visible()).toBe(false)
+    expect(button('我的成绩').visible()).toBe(false)
+    expect(button('刷新').visible()).toBe(true)
+    const panes = root.all().filter((node) => node.classList.contains('player-pane') && node.visible())
+    expect(panes).toHaveLength(1)
+    expect(panes[0]!.classList.contains('hidden')).toBe(false)
+  })
+
+  it('加载进度与失败原因在只有大表时仍然可见', async () => {
+    const pending = deferred<LoadedPlayer>()
+    vi.mocked(loadPlayer).mockReturnValueOnce(pending.promise)
+    vi.stubGlobal('location', { search: '?id=16&embed=analysis' })
+    await mount()
+
+    const status = find((node) => node.classList.contains('player-status'))
+    expect(status.visible()).toBe(true)
+    expect(status.textContent).toBe('正在获取录像列表…')
+
+    vi.mocked(loadPlayer).mock.calls[0]![1]!.onProgress?.({ done: 1, total: 3 })
+    expect(status.textContent).toContain('1/3')
+
+    pending.reject(new Error('网络不可用'))
+    await pending.promise.catch(() => {})
+    await Promise.resolve()
+    expect(status.visible()).toBe(true)
+    expect(status.textContent).toBe('网络不可用')
+  })
+})
+
+describe('启动参数错误', () => {
+  // 参数边界由 player-stats-launch.test.ts 覆盖，这里验证错误不会启动页面或请求。
+  it('参数错误时不挂载大表、不加载数据', async () => {
+    vi.stubGlobal('location', { search: '?id=0' })
+    await mount()
+    expect(root.textContent).toContain('缺少合法的用户 ID')
+    expect(root.all().filter((node) => node.tag === 'main')).toHaveLength(0)
+    expect(loadPlayer).not.toHaveBeenCalled()
+    expect(createAnalysisViewMock).not.toHaveBeenCalled()
   })
 })

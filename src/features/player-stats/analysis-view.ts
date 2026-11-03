@@ -152,12 +152,19 @@ function dateAttr(value: number, dates: number[]): string {
     : ''
 }
 
+export interface AnalysisViewOptions {
+  /** 启动时若保存的是网站锚点，是否自动读取网站；独立 CSV 传 false 以免联网。 */
+  autoSiteAnchors?: boolean
+}
+
 export interface AnalysisView {
   root: HTMLElement
   update(videos: Video[], options?: { csv?: boolean }): void
+  /** 销毁视图：使进行中的锚点请求失效并移除节点。 */
+  destroy(): void
 }
 
-export function createAnalysisView(): AnalysisView {
+export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisView {
   const state = {
     nav: 'overview' as NavKey,
     range: 0,
@@ -1750,7 +1757,20 @@ export function createAnalysisView(): AnalysisView {
     }
   }
 
-  if (settings.anchorMode === 'site') void loadSiteAnchors()
+  if (options.autoSiteAnchors !== false && settings.anchorMode === 'site') {
+    void loadSiteAnchors()
+  }
 
-  return { root, update }
+  function destroy(): void {
+    // 让晚到的锚点响应失效，避免销毁后的视图继续改设置或重绘。
+    anchorRequest += 1
+    videos = []
+    games = []
+    rangeGames = []
+    ratingGames = []
+    root.replaceChildren()
+    root.remove()
+  }
+
+  return { root, update, destroy }
 }

@@ -1,4 +1,4 @@
-import { PLAYER_URL } from './constants'
+import { CSV_PLAYER_PAGE, PLAYER_URL } from './constants'
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -85,6 +85,11 @@ export async function openPlayerTab(id: number): Promise<void> {
 /** 打开扩展内的玩家数据页（PB 表 + 前端成绩）。 */
 export async function openPlayerStatsTab(id: number): Promise<void> {
   await chrome.tabs.create({ url: chrome.runtime.getURL(`player.html?id=${id}`) })
+}
+
+/** 打开独立本地 CSV 分析页：不需要玩家 ID，也不会自动加载网站数据。 */
+export async function openLocalCsvTab(): Promise<void> {
+  await chrome.tabs.create({ url: chrome.runtime.getURL(CSV_PLAYER_PAGE) })
 }
 
 export function openOptionsPage(): void {

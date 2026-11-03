@@ -16,7 +16,7 @@ export default defineConfig({
     target: 'chrome120',
     sourcemap: false,
     rollupOptions: {
-      input: resolve(root, 'src/content/upload.ts'),
+      input: resolve(root, 'src/content/main.ts'),
       output: {
         format: 'iife',
         entryFileNames: 'content/upload.js',

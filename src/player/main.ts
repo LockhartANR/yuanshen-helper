@@ -5,4 +5,9 @@ import { mountPlayerStats } from '../features/player-stats/view'
 const root = document.getElementById('app')
 if (!root) throw new Error('Missing #app')
 
-void mountPlayerStats(root)
+const framed = window.self !== window.top
+
+void mountPlayerStats(root, { framed }).then((handle) => {
+  if (!handle) return
+  window.addEventListener('pagehide', () => handle.destroy(), { once: true })
+})

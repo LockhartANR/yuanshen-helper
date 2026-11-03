@@ -172,7 +172,27 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   const saveSelfButton = el('button', 'button', '保存')
   saveSelfButton.type = 'button'
   selfRow.append(selfLabel, selfInput, saveSelfButton)
-  selfCard.append(selfRow)
+
+  const siteAnalysisRow = el('div', 'setting-row')
+  const siteAnalysisLabel = el('span', 'setting-label', '玩家页入口')
+  const siteAnalysisCheckboxLabel = el('label', 'checkbox-row')
+  const siteAnalysisCheckbox = el('input') as HTMLInputElement
+  siteAnalysisCheckbox.type = 'checkbox'
+  siteAnalysisCheckboxLabel.append(
+    siteAnalysisCheckbox,
+    el('span', undefined, '在 openms.top 玩家页显示「赛博大表」入口'),
+  )
+  siteAnalysisRow.append(siteAnalysisLabel, siteAnalysisCheckboxLabel)
+
+  selfCard.append(
+    selfRow,
+    siteAnalysisRow,
+    el(
+      'p',
+      'hint-text',
+      '关闭后已打开的站点标签页会立即移除入口和展开的大表；重新开启只恢复入口，不会自动展开。默认开启。',
+    ),
+  )
 
   const logsCard = el('section', 'card')
   const logsHead = el('div', 'section-head')
@@ -312,6 +332,7 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
       apiInput.value = settings.apiBase
     }
     autoCheckbox.checked = settings.autoIncrementalOnPopup
+    siteAnalysisCheckbox.checked = settings.siteAnalysisEnabled
     if (document.activeElement !== selfInput) {
       selfInput.value = settings.selfUserId === null ? '' : String(settings.selfUserId)
     }
@@ -458,6 +479,30 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
         await addLog(
           'info',
           autoCheckbox.checked ? '已开启打开 popup 自动增量' : '已关闭打开 popup 自动增量',
+        )
+        await refresh()
+      } catch (error) {
+        setNotice(errorMessage(error), true)
+      }
+    })()
+  })
+
+  siteAnalysisCheckbox.addEventListener('change', () => {
+    void (async () => {
+      try {
+        settings = await saveSettings({
+          siteAnalysisEnabled: siteAnalysisCheckbox.checked,
+        })
+        setNotice(
+          siteAnalysisCheckbox.checked
+            ? '已开启玩家页「赛博大表」入口'
+            : '已关闭玩家页「赛博大表」入口',
+        )
+        await addLog(
+          'info',
+          siteAnalysisCheckbox.checked
+            ? '已开启 openms.top 玩家页赛博大表入口'
+            : '已关闭 openms.top 玩家页赛博大表入口',
         )
         await refresh()
       } catch (error) {

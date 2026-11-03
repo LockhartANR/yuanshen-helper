@@ -6,6 +6,8 @@ export interface Settings {
   identifierLookupEnabled: boolean
   /** 手动填写的站内用户 ID，用于「我的成绩」；null 表示没填。 */
   selfUserId: number | null
+  /** 是否在 openms.top 玩家页显示「赛博大表」入口；旧设置缺字段时默认开启。 */
+  siteAnalysisEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -13,6 +15,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoIncrementalOnPopup: false,
   identifierLookupEnabled: false,
   selfUserId: null,
+  siteAnalysisEnabled: true,
 }
 
 const SETTINGS_KEY = 'settings'
@@ -33,6 +36,8 @@ export async function getSettings(): Promise<Settings> {
     ...value,
     apiBase,
     selfUserId: normalizeSelfUserId(value?.selfUserId),
+    // 旧版本没有这个字段，不能因为缺字段就关掉入口。
+    siteAnalysisEnabled: value?.siteAnalysisEnabled !== false,
   }
 }
 
@@ -45,6 +50,10 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
     selfUserId: normalizeSelfUserId(
       patch.selfUserId === undefined ? current.selfUserId : patch.selfUserId,
     ),
+    siteAnalysisEnabled:
+      patch.siteAnalysisEnabled === undefined
+        ? current.siteAnalysisEnabled
+        : patch.siteAnalysisEnabled !== false,
   }
   await chrome.storage.local.set({ [SETTINGS_KEY]: next })
   return next

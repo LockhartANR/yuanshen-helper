@@ -1229,3 +1229,77 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- 独立 CSV 空态 ---- */
+
+.csv-empty {
+  margin: 18px 0 20px;
+  padding: 26px 28px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.csv-empty .card-title {
+  margin-bottom: 8px;
+}
+
+.csv-empty-text {
+  max-width: 760px;
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.csv-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.csv-empty-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.csv-empty-format {
+  max-width: 760px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.csv-empty-format summary {
+  cursor: pointer;
+}
+
+.csv-empty-format p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
+/* ---- 站内嵌入（iframe 内） ---- */
+
+.player-page-embedded {
+  max-width: none;
+  padding: 14px 16px 32px;
+}
+
+.player-page-embedded .player-header {
+  margin-bottom: 10px;
+}
+
+.player-page-embedded .player-name {
+  font-size: 18px;
+}
+
+.player-page-embedded .analysis-view {
+  min-height: 300px;
+}
+
+.player-page-embedded .analysis-note {
+  margin-top: 12px;
+}

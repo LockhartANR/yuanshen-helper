@@ -126,6 +126,41 @@ body {
   color: var(--muted);
 }
 
+.csv-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 12px 10px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+}
+
+.csv-entry:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.csv-entry .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.csv-entry-label {
+  font-weight: 600;
+}
+
+.csv-entry-note {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .identifier-toggle {
   position: relative;
   display: grid;
