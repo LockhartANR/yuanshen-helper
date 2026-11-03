@@ -32,7 +32,7 @@ const SOFTWARE_OPTIONS: { value: string; label: string }[] = [
 ]
 
 const CSV_FORMAT_HINT =
-  '首行表头为 Arbiter / Anthropic stats 的 31 列格式（Day、Month、Year、Hour、Min、Sec、mode、Time、BBBV、BBBVs、style 等），单文件不超过 20 MB。'
+  '首行表头为 Arbiter / 元扫雷 的 31 列格式（Day、Month、Year、Hour、Min、Sec、mode、Time、BBBV、BBBVs、style 等），单文件不超过 20 MB。'
 
 interface UiState {
   rows: PlayerVideoRow[]
@@ -293,7 +293,7 @@ export async function mountPlayerStats(
   const csvEmptyText = el(
     'p',
     'csv-empty-text',
-    '导入扫雷网成绩 CSV，直接用本机的 PB 表、前端成绩和赛博大表分析，不需要玩家 ID，也不会请求网站数据。',
+    '导入本地 CSV，支持导入多个 Arbiter / 元扫雷 CSV 文件，无去重，请直接导入各软件原始 CSV，无需手动合并。',
   )
   const csvEmptyButton = el('button', 'button primary', '选择 CSV 文件')
   csvEmptyButton.type = 'button'
