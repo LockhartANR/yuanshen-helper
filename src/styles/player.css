@@ -651,15 +651,34 @@ body {
   background: var(--accent);
 }
 
-.today-table .copy-cell {
+.copy-cell {
   width: 64px;
   min-width: 64px;
   padding-left: 4px;
   padding-right: 8px;
   white-space: nowrap;
+  /* 复制列吸附在表格右侧：横向滚动时按钮不会被裁掉。 */
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--bg);
+  box-shadow: -1px 0 0 var(--border);
 }
 
-.copy-today {
+.month-table thead .copy-cell {
+  background: var(--surface);
+}
+
+.data-table thead .copy-cell {
+  z-index: 2;
+}
+
+/* 行悬浮时吸附列跟随整行底色，避免出现一块没变色的白格。 */
+.data-table tbody tr:hover .copy-cell {
+  background: var(--hover);
+}
+
+.copy-button {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -672,15 +691,107 @@ body {
   white-space: nowrap;
 }
 
-.copy-today:hover {
+.copy-button:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.copy-today.copied {
+.copy-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.copy-button.copied {
   border-color: #86efac;
   background: #f0fdf4;
   color: #15803d;
+}
+
+/* ---- 趋势复制设置 ---- */
+
+.copy-settings {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.copy-settings-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-bottom: 6px;
+}
+
+.copy-settings-head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.copy-shared {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.copy-fixed {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.copy-field-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.copy-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+
+.copy-group {
+  min-width: 76px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.copy-field {
+  font-size: 12px;
+}
+
+.copy-preview {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.copy-preview-title {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.copy-preview-text {
+  margin: 0;
+  overflow-x: auto;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.copy-settings-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
 }
 
 .toolbar {
@@ -874,7 +985,7 @@ body {
 }
 
 .month-table {
-  min-width: 1180px;
+  min-width: 1100px;
 }
 
 .week-row {
@@ -990,7 +1101,7 @@ body {
 
 .year-table {
   width: 100%;
-  min-width: 640px;
+  min-width: 700px;
   font-size: 12px;
 }
 

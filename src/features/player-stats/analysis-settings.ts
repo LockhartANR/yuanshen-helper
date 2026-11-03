@@ -2,6 +2,8 @@ import type { Level } from './model'
 import { DEFAULT_COLOR_THRESHOLDS } from './colors'
 import type { LsfAnchors, SoftWeights } from './ratings'
 import { WORKBOOK_ANCHORS, WORKBOOK_LEVEL_WEIGHTS, WORKBOOK_SOFT_WEIGHTS } from './ratings'
+import { normalizeMonthCopyFields, normalizeYearCopyFields } from './trend-copy'
+import type { MonthCopyField, YearCopyField } from './trend-copy'
 
 export interface AnalysisSettings {
   /** 当前使用的锚点来源。 */
@@ -34,6 +36,10 @@ export interface AnalysisSettings {
   /** 狗预测目标（逗号分隔）。 */
   dogTargetsE: string
   dogTargetsI: string
+  /** 月均可选复制字段；空数组表示只要固定三行。 */
+  monthCopyFields: MonthCopyField[]
+  /** 年汇总可选复制字段，三个难度共用；空数组表示只要固定三行。 */
+  yearCopyFields: YearCopyField[]
 }
 
 export const DEFAULT_ANALYSIS_SETTINGS: AnalysisSettings = {
@@ -61,6 +67,8 @@ export const DEFAULT_ANALYSIS_SETTINGS: AnalysisSettings = {
   },
   dogTargetsE: '50,45,40,35',
   dogTargetsI: '13,12,11,10',
+  monthCopyFields: [],
+  yearCopyFields: [],
 }
 
 const STORAGE_KEY = 'analysisSettings'
@@ -160,6 +168,9 @@ export function loadAnalysisSettings(): AnalysisSettings {
         typeof value.dogTargetsI === 'string' && value.dogTargetsI.trim()
           ? value.dogTargetsI
           : DEFAULT_ANALYSIS_SETTINGS.dogTargetsI,
+      // 旧存档没有这两个字段时补空数组；非法值、重复值都归一化到固定顺序。
+      monthCopyFields: normalizeMonthCopyFields(value.monthCopyFields),
+      yearCopyFields: normalizeYearCopyFields(value.yearCopyFields),
     }
   } catch {
     return defaultSettings()

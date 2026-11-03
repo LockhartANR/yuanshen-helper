@@ -84,4 +84,52 @@ describe('分析参数', () => {
     saveAnalysisSettings({ ...DEFAULT_ANALYSIS_SETTINGS, colorThresholds: [1, 2] })
     expect(loadAnalysisSettings().colorThresholds).toHaveLength(29)
   })
+
+  it('旧存档缺少复制字段时补为空数组', () => {
+    storage.set('analysisSettings', JSON.stringify({ rankLimit: 77 }))
+    const loaded = loadAnalysisSettings()
+    expect(loaded.rankLimit).toBe(77)
+    expect(loaded.monthCopyFields).toEqual([])
+    expect(loaded.yearCopyFields).toEqual([])
+  })
+
+  it('月均与年汇总复制选项独立保存', () => {
+    saveAnalysisSettings({
+      ...DEFAULT_ANALYSIS_SETTINGS,
+      monthCopyFields: ['op', 'medianTime'],
+      yearCopyFields: ['mov'],
+    })
+    const loaded = loadAnalysisSettings()
+    expect(loaded.monthCopyFields).toEqual(['medianTime', 'op'])
+    expect(loaded.yearCopyFields).toEqual(['mov'])
+
+    saveAnalysisSettings({ ...loaded, monthCopyFields: ['cls'], yearCopyFields: [] })
+    const next = loadAnalysisSettings()
+    expect(next.monthCopyFields).toEqual(['cls'])
+    expect(next.yearCopyFields).toEqual([])
+  })
+
+  it('复制选项过滤非法值、重复项归一化，显式空数组保留', () => {
+    storage.set(
+      'analysisSettings',
+      JSON.stringify({
+        monthCopyFields: ['op', 'op', 'nope', 3, null, 'medianTime', 'cls'],
+        yearCopyFields: ['mov', 'mov', 'bad', 'cls'],
+      }),
+    )
+    const loaded = loadAnalysisSettings()
+    expect(loaded.monthCopyFields).toEqual(['medianTime', 'op', 'cls'])
+    expect(loaded.yearCopyFields).toEqual(['cls', 'mov'])
+
+    saveAnalysisSettings({ ...DEFAULT_ANALYSIS_SETTINGS, monthCopyFields: [], yearCopyFields: [] })
+    const empty = loadAnalysisSettings()
+    expect(empty.monthCopyFields).toEqual([])
+    expect(empty.yearCopyFields).toEqual([])
+
+    storage.set('analysisSettings', JSON.stringify({ monthCopyFields: 'op', yearCopyFields: 1 }))
+    const invalid = loadAnalysisSettings()
+    expect(invalid.monthCopyFields).toEqual([])
+    expect(invalid.yearCopyFields).toEqual([])
+  })
+
 })

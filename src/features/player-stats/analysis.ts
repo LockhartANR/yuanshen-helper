@@ -67,7 +67,7 @@ export interface TodayStat {
   avgStnb: number
 }
 
-const LEVEL_EN: Record<Level, string> = {
+export const LEVEL_EN: Record<Level, string> = {
   b: 'beg',
   i: 'int',
   e: 'exp',
@@ -115,7 +115,7 @@ interface WeekStat {
   levels: Record<Level, WeekLevelDetail>
 }
 
-interface MonthStat {
+export interface MonthStat {
   key: string
   days: number
   count: number
