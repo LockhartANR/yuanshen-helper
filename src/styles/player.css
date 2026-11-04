@@ -969,6 +969,11 @@ body {
   cursor: pointer;
 }
 
+/* 周表也走表格内部横向滚动，复制列吸附在右侧，页面本身不横向溢出。 */
+.week-table {
+  min-width: 720px;
+}
+
 .week-row:hover td {
   background: var(--hover);
 }

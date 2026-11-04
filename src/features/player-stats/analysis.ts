@@ -97,7 +97,7 @@ export interface RecentPb {
   prev: number
 }
 
-interface WeekLevelDetail {
+export interface WeekLevelDetail {
   slot: number
   slots: Array<{ time: number; bvs: number; stnb: number }>
   totals: { time: number; bvs: number; stnb: number }
@@ -105,7 +105,7 @@ interface WeekLevelDetail {
   ppp: number
 }
 
-interface WeekStat {
+export interface WeekStat {
   start: number
   count: number
   t37: number

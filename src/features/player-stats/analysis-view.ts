@@ -74,9 +74,15 @@ import {
   MONTH_COPY_FIELDS,
   MONTH_COPY_GROUPS,
   YEAR_COPY_FIELDS,
+  formatCopyMonth,
+  formatCopyWeek,
+  formatWeekDelta,
   monthCopyText,
   normalizeMonthCopyFields,
   normalizeYearCopyFields,
+  weekCopyText,
+  weekCopyEntries,
+  weekDeltaClass,
   yearCopyText,
 } from './trend-copy'
 
@@ -127,9 +133,19 @@ function escapeHtml(text: string): string {
 }
 
 function trendCopyCell(kind: 'month' | 'year', key: string | number, level: Level, disabled = false): string {
-  const label = `复制 ${key} ${LEVEL_LABELS[level]}${kind === 'month' ? '月均' : '年汇总'}数据`
+  // 按钮上展示的日期也走复制格式；回查仍用 data-copy-key 里的内部键。
+  const shown = kind === 'month' ? formatCopyMonth(String(key)) : String(key)
+  const label = `复制 ${shown} ${LEVEL_LABELS[level]}${kind === 'month' ? '月均' : '年汇总'}数据`
   return '<td class="copy-cell">' +
     `<button type="button" class="copy-button" data-copy-kind="${kind}" data-copy-key="${key}" data-copy-level="${level}" aria-label="${label}" title="${disabled ? '当月没有局数' : label}"${disabled ? ' disabled' : ''}>复制</button>` +
+    '</td>'
+}
+
+/** 周复制按钮的可访问名称带完整周一至周日日期；没有成绩的周不渲染按钮。 */
+function weekCopyCell(start: number): string {
+  const label = `复制 ${formatCopyWeek(start).replace('–', ' 至 ')} 周成绩`
+  return '<td class="copy-cell">' +
+    `<button type="button" class="copy-button" data-copy-kind="week" data-copy-week="${start}" aria-label="${label}" title="${label}">复制</button>` +
     '</td>'
 }
 
@@ -801,6 +817,8 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   let trendMonths: MonthStat[] = []
   let trendMonthLevel: Level = 'e'
   let trendYears: Record<Level, YearStat[]> = { b: [], i: [], e: [] }
+  /** 本次渲染的周复制文本，包含已确定的 Δ 和筛选范围，以周起点回查。 */
+  const trendWeekCopies = new Map<number, string>()
   let now = Date.now()
   const settings = loadAnalysisSettings()
   configureColors(settings.colorThresholds)
@@ -1186,14 +1204,26 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }, 1200)
   }
 
+  /** 复制设置只有月均、年汇总两个范围；周复制内容固定，没有设置入口。 */
+  type CopySettingsScope = 'month' | 'year'
+
+  function isCopySettingsScope(value: string | undefined): value is CopySettingsScope {
+    return value === 'month' || value === 'year'
+  }
+
   /** 按按钮上的周期标识回查本次渲染的统计结果，避免点击时重新聚合。 */
   function copyButtonText(button: HTMLButtonElement): string | null {
-    const kind = button.dataset.copyKind ?? 'today'
+    const kind = button.dataset.copyKind
     const level = button.dataset.copyLevel as Level | undefined
     if (kind === 'today') {
       if (!level) return null
       const row = todaySnapshot.find((item) => item.level === level)
       return row ? todayCopyText(row) : null
+    }
+    if (kind === 'week') {
+      const start = Number(button.dataset.copyWeek)
+      if (!Number.isFinite(start)) return null
+      return trendWeekCopies.get(start) ?? null
     }
     const key = button.dataset.copyKey
     if (!key || !level) return null
@@ -1203,14 +1233,20 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       const row = trendMonths.find((row) => row.key === key && row.count > 0)
       return row ? monthCopyText(row, level, settings.monthCopyFields) : null
     }
-    const row = trendYears[level].find((row) => String(row.year) === key && row.count > 0)
-    return row ? yearCopyText(row, level, settings.yearCopyFields) : null
+    if (kind === 'year') {
+      const row = trendYears[level].find((row) => String(row.year) === key && row.count > 0)
+      return row ? yearCopyText(row, level, settings.yearCopyFields) : null
+    }
+    return null
   }
 
-  function copyPreview(scope: 'month' | 'year', level = trendMonthLevel): { title: string; text: string } {
+  function copyPreview(
+    scope: CopySettingsScope,
+    level = trendMonthLevel,
+  ): { title: string; text: string } {
     const month = scope === 'month' ? trendMonths.find((row) => row.count > 0) : undefined
     const year = scope === 'year' ? trendYears[level].find((row) => row.count > 0) : undefined
-    const period = month?.key ?? year?.year
+    const period = month ? formatCopyMonth(month.key) : year?.year
     return {
       title: `复制预览${period === undefined ? '' : ` · ${period}`} · ${LEVEL_LABELS[level]}`,
       text: month
@@ -1221,7 +1257,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
   }
 
-  function copyFieldRows(scope: 'month' | 'year', level?: Level): string {
+  function copyFieldRows(scope: CopySettingsScope, level?: Level): string {
     const selected: readonly string[] =
       scope === 'month' ? settings.monthCopyFields : settings.yearCopyFields
     const checkbox = (field: string, label: string, id: string): string =>
@@ -1247,20 +1283,17 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   }
 
   /** 月均卡片与年汇总卡片共用的设置区；年汇总三个难度各渲染一份。 */
-  function copySettingsHtml(scope: 'month' | 'year', level?: Level): string {
+  function copySettingsHtml(scope: CopySettingsScope, level?: Level): string {
     const month = scope === 'month'
     const id = month ? 'month-copy-settings' : `year-copy-settings-${level}`
     const open = month ? state.monthCopyOpen : level !== undefined && state.yearCopyOpen[level]
     const preview = copyPreview(scope, level)
-    const fixed = month
-      ? '固定内容：月份与难度、局数概况、平均成绩（始终保留）'
-      : '固定内容：年份与难度、局数概况、平均成绩（始终保留）'
     return (
       `<section class="copy-settings${open ? '' : ' hidden'}" id="${id}"${month ? '' : ` data-level="${level}"`}>` +
       '<div class="copy-settings-head"><h3>复制设置</h3>' +
       (month ? '' : '<span class="copy-shared">适用于三个难度</span>') +
       '</div>' +
-      `<p class="copy-fixed">${fixed}</p>` +
+      `<p class="copy-fixed">固定内容：${month ? '月份' : '年份'}与难度、局数概况、平均成绩（始终保留）</p>` +
       `<div class="copy-field-groups">${copyFieldRows(scope, level)}</div>` +
       `<div class="copy-preview" data-copy-preview="${scope}"${month ? '' : ` data-level="${level}"`}>` +
       `<p class="copy-preview-title">${escapeHtml(preview.title)}</p>` +
@@ -1276,7 +1309,8 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
   /** 展开 / 收起设置区：只记在当前视图会话，不写入存档。 */
   function toggleCopySettings(button: HTMLElement): void {
-    const scope = button.dataset.copyPanel === 'year' ? 'year' : 'month'
+    const scope = button.dataset.copyPanel
+    if (!isCopySettingsScope(scope)) return
     const target = button.getAttribute('aria-controls')
     const panel = target ? viewHost.querySelector<HTMLElement>(`#${target}`) : null
     if (!panel) return
@@ -1295,7 +1329,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
    * 勾选、恢复默认后同步所有同名设置区并刷新预览。
    * 不走整页重绘，展开状态和键盘焦点自然保留。
    */
-  function setCopyFields(scope: 'month' | 'year', fields: unknown): void {
+  function setCopyFields(scope: CopySettingsScope, fields: unknown): void {
     if (scope === 'month') settings.monthCopyFields = normalizeMonthCopyFields(fields)
     else settings.yearCopyFields = normalizeYearCopyFields(fields)
     saveAnalysisSettings(settings)
@@ -1516,7 +1550,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     } else if (state.nav === 'rank') {
       viewHost.innerHTML = rankHtml()
     } else if (state.nav === 'trend') {
-      viewHost.innerHTML = trendHtml()
+      viewHost.innerHTML = trendHtml(bounds)
     } else if (state.nav === 'period') {
       viewHost.innerHTML = periodHtml()
     } else if (state.nav === 'dist') {
@@ -1755,7 +1789,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
           `<td class="num"${row.count > 0 ? colorAttr(row.level, 'bvs', row.avgBvs) : ''}>${row.count > 0 ? row.avgBvs.toFixed(3) : '—'}</td>` +
           `<td class="num"${row.count > 0 ? colorAttr(row.level, 'stnb', row.avgStnb) : ''}>${row.count > 0 ? row.avgStnb.toFixed(1) : '—'}</td>` +
           `<td class="num">${row.count > 0 ? row.avgBv.toFixed(1) : '—'}</td>` +
-          `<td class="copy-cell"><button type="button" class="copy-button" data-copy-level="${row.level}" aria-label="复制今日${LEVEL_LABELS[row.level]}数据" title="复制今日${LEVEL_LABELS[row.level]}数据">复制</button></td>` +
+          `<td class="copy-cell"><button type="button" class="copy-button" data-copy-kind="today" data-copy-level="${row.level}" aria-label="复制今日${LEVEL_LABELS[row.level]}数据" title="复制今日${LEVEL_LABELS[row.level]}数据">复制</button></td>` +
           '</tr>'
         )
       })
@@ -1953,7 +1987,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     )
   }
 
-  function trendHtml(): string {
+  function trendHtml(bounds: DateRange): string {
     const weeks = weekStats(
       games,
       10,
@@ -1969,11 +2003,15 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     trendMonths = allMonths
     trendMonthLevel = state.trendLevel
     for (const level of LEVELS) trendYears[level] = yearStats(games, level, rangeGames)
-
-    const weekRows = weeks
-      .map((week, index) => {
-        const prev = index > 0 ? (weeks[index - 1] as (typeof weeks)[number]) : null
-        const diff = prev ? week.t37 - prev.t37 : null
+    trendWeekCopies.clear()
+    const weekRows = weekCopyEntries(weeks)
+      .map(({ week, delta }) => {
+        trendWeekCopies.set(week.start, weekCopyText(week, {
+          delta,
+          software: csvMode ? 'all' : state.software,
+          nfOnly: state.nfOnly,
+          range: bounds,
+        }))
         const levelBlock = (level: Level): string => {
           const data = week.levels[level]
           const prefix = level
@@ -2000,7 +2038,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
           )
         }
         const detail =
-          '<tr class="week-detail hidden"><td colspan="7"><div class="week-level-grid">' +
+          '<tr class="week-detail hidden"><td colspan="8"><div class="week-level-grid">' +
           `<div class="week-level-column">${levelBlock('b')}</div>` +
           `<div class="week-level-column">${levelBlock('i')}${levelBlock('e')}</div>` +
           '</div>' +
@@ -2021,7 +2059,8 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
           `<td class="num">${week.b37.toFixed(1)}</td>` +
           `<td class="num">${week.s37.toFixed(1)}</td>` +
           `<td class="num">${week.ppp.toFixed(3)}</td>` +
-          `<td class="num ${diff === null ? '' : diff < 0 ? 'delta-up' : 'delta-down'}">${diff === null ? '—' : `${diff < 0 ? '−' : '+'}${Math.abs(diff).toFixed(1)}`}</td>` +
+          `<td class="num ${weekDeltaClass(delta)}">${formatWeekDelta(delta)}</td>` +
+          weekCopyCell(week.start) +
           '</tr>' +
           detail
         )
@@ -2153,10 +2192,12 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     return (
       '<div class="card">' +
       '<div class="card-head"><h2 class="card-title">周 T37</h2><span class="muted">按参数槽位取用时 / 3BVS / STNB · T37 越小越好 · 点周行展开三级明细</span></div>' +
-      '<table class="data-table">' +
-      '<thead><tr><th>周起始</th><th class="num">局数</th><th class="num">T37</th><th class="num">B37</th><th class="num">S37</th><th class="num">ppp</th><th class="num">ΔT37</th></tr></thead>' +
-      `<tbody>${weekRows || '<tr><td colspan="7" class="muted">没有数据</td></tr>'}</tbody>` +
+      '<div class="table-scroll">' +
+      '<table class="data-table week-table">' +
+      '<thead><tr><th>周起始</th><th class="num">局数</th><th class="num">T37</th><th class="num">B37</th><th class="num">S37</th><th class="num">ppp</th><th class="num">ΔT37</th><th class="copy-cell"></th></tr></thead>' +
+      `<tbody>${weekRows || '<tr><td colspan="8" class="muted">没有数据</td></tr>'}</tbody>` +
       '</table>' +
+      '</div>' +
       '</div>' +
 
       '<div class="card">' +
@@ -2631,11 +2672,12 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
     const copyReset = target.closest<HTMLElement>('[data-copy-reset]')
     if (copyReset) {
-      setCopyFields(copyReset.dataset.copyReset === 'year' ? 'year' : 'month', [])
+      const scope = copyReset.dataset.copyReset
+      if (isCopySettingsScope(scope)) setCopyFields(scope, [])
       return
     }
     // 复制必须在周 / 月行展开之前处理，否则点击复制会顺带展开明细。
-    const copyButton = target.closest<HTMLButtonElement>('button[data-copy-level]')
+    const copyButton = target.closest<HTMLButtonElement>('button[data-copy-kind]')
     if (copyButton) {
       const text = copyButtonText(copyButton)
       if (text === null) return
@@ -2770,8 +2812,11 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     const input = event.target as HTMLInputElement
     const copyField = input.dataset.copyField
     if (copyField) {
-      const scope = input.dataset.copyScope === 'year' ? 'year' : 'month'
-      const next = new Set<string>(scope === 'month' ? settings.monthCopyFields : settings.yearCopyFields)
+      const scope = input.dataset.copyScope
+      if (!isCopySettingsScope(scope)) return
+      const next = new Set<string>(
+        scope === 'month' ? settings.monthCopyFields : settings.yearCopyFields,
+      )
       if (input.checked) next.add(copyField)
       else next.delete(copyField)
       setCopyFields(scope, [...next])
