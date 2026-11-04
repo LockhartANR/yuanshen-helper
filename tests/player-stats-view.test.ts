@@ -4,19 +4,31 @@ import { loadPlayer, ensureDetails } from '../src/features/player-stats/service'
 import { fetchUserInfo } from '../src/features/player-stats/api'
 import type { LoadedPlayer } from '../src/features/player-stats/service'
 import { parseStatsCsv } from '../src/features/player-stats/csv'
+import {
+  createMemoryCsvStore,
+  readCsvFile,
+} from '../src/features/player-stats/csv-sources'
+import type { CsvSourceStore } from '../src/features/player-stats/csv-sources'
 
-const { updateAnalysis, createAnalysisViewMock } = vi.hoisted(() => ({
+const { updateAnalysis, createAnalysisViewMock, storeRef } = vi.hoisted(() => ({
   updateAnalysis: vi.fn(),
   createAnalysisViewMock: vi.fn(),
+  storeRef: { current: null as unknown as CsvSourceStore },
 }))
 
-vi.mock('../src/features/player-stats/service', () => ({ loadPlayer: vi.fn(), ensureDetails: vi.fn() }))
+vi.mock('../src/features/player-stats/service', () => ({
+  loadPlayer: vi.fn(),
+  ensureDetails: vi.fn(),
+}))
 vi.mock('../src/features/player-stats/api', () => ({ fetchUserInfo: vi.fn(async () => null) }))
 vi.mock('../src/features/player-stats/analysis-settings', () => ({
   loadAnalysisSettings: () => ({ bvFloors: { b: 10, i: 30, e: 100 }, colorThresholds: [] }),
 }))
 vi.mock('../src/features/player-stats/colors', () => ({
-  configureColors: vi.fn(), pbColorStyle: () => null, dateColorStyle: () => null, medianOf: () => 0,
+  configureColors: vi.fn(),
+  pbColorStyle: () => null,
+  dateColorStyle: () => null,
+  medianOf: () => 0,
 }))
 vi.mock('../src/features/player-stats/software-icon', () => ({ softwareIcon: () => null }))
 vi.mock('../src/features/player-stats/analysis-view', () => ({
@@ -29,8 +41,17 @@ vi.mock('../src/features/player-stats/analysis-view', () => ({
     }
   },
 }))
+vi.mock('../src/features/player-stats/csv-sources', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../src/features/player-stats/csv-sources')>()
+  return {
+    ...actual,
+    // 视图测试不触碰真实数据库；关联清单放进可控的内存 store。
+    createCsvStore: () => storeRef.current,
+  }
+})
 
-// 只替代本页使用的 DOM 基础操作；事件直接驱动真实 mountPlayerStats 和异步加载逻辑。
+// 只替代本页使用的 DOM 基础操作；事件直接驱动真实 mountPlayerStats 和异步读取逻辑。
 // 不模拟浏览器布局，视觉效果仍需浏览器验证。
 class TestElement {
   children: TestElement[] = []
@@ -41,16 +62,23 @@ class TestElement {
   value = ''
   disabled = false
   checked = false
-  files: ReturnType<typeof csvFile>[] = []
+  files: Array<{ name: string; size: number; text(): Promise<string> }> = []
   attributes = new Map<string, string>()
   listeners = new Map<string, Array<() => void>>()
   private text = ''
   constructor(readonly tag: string) {}
-  get textContent(): string { return this.text + this.children.map((child) => child.textContent).join('') }
-  set textContent(value: string) { this.text = value; this.children = [] }
+  get textContent(): string {
+    return this.text + this.children.map((child) => child.textContent).join('')
+  }
+  set textContent(value: string) {
+    this.text = value
+    this.children = []
+  }
   classList = {
     contains: (name: string): boolean => this.className.split(' ').includes(name),
-    add: (name: string): void => { this.classList.toggle(name, true) },
+    add: (name: string): void => {
+      this.classList.toggle(name, true)
+    },
     toggle: (name: string, force?: boolean): boolean => {
       const names = new Set(this.className.split(' ').filter(Boolean))
       const active = force ?? !names.has(name)
@@ -61,349 +89,552 @@ class TestElement {
     },
   }
   append(...children: TestElement[]): void {
-    for (const child of children) { child.parent = this; this.children.push(child) }
+    for (const child of children) {
+      child.parent = this
+      this.children.push(child)
+    }
   }
-  replaceChildren(...children: TestElement[]): void { this.textContent = ''; this.append(...children) }
-  setAttribute(key: string, value: string): void { this.attributes.set(key, value) }
+  replaceChildren(...children: TestElement[]): void {
+    this.textContent = ''
+    this.append(...children)
+  }
+  setAttribute(key: string, value: string): void {
+    this.attributes.set(key, value)
+  }
   addEventListener(type: string, listener: () => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener])
   }
-  emit(type: string): void { for (const listener of this.listeners.get(type) ?? []) listener() }
-  click(): void { if (!this.disabled) this.emit('click') }
-  all(): TestElement[] { return [this, ...this.children.flatMap((child) => child.all())] }
-  visible(): boolean { return !this.classList.contains('hidden') && (this.parent?.visible() ?? true) }
+  emit(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener()
+  }
+  click(): void {
+    if (!this.disabled) this.emit('click')
+  }
+  all(): TestElement[] {
+    return [this, ...this.children.flatMap((child) => child.all())]
+  }
+  visible(): boolean {
+    return !this.classList.contains('hidden') && (this.parent?.visible() ?? true)
+  }
 }
 
-const HEADER = 'Day,Month,Year,Hour,Min,Sec,mode,Time,BBBV,BBBVs,style,cell0,cell1,cell2,cell3,cell4,cell5,cell6,cell7,cell8,Lcl,Rcl,Dcl,Leff,Reff,Deff,Openings,Islands,Path,GZiNi,HZiNi'
-const ROW = '2,8,2024,16,1,12,BEG,5.00,12,2.40,Flag,19,21,10,4,0,0,0,0,0,12,3,3,12,1,3,3,3,992,12,12'
-const CSV = `${HEADER}\n${ROW}`
-function csvFile(name: string, text = CSV, size = text.length) {
-  return { name, size, text: async () => text }
-}
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
+import { CsvTestHandle as ViewHandle, CSV, csv, deferred } from './helpers/stats-csv'
+
 function loaded(): LoadedPlayer {
   const video = { ...parseStatsCsv(CSV).videos[0]!, id: 123 }
-  return { userId: 16, fetchedAt: 1, fromCache: false, missing: [], rows: [
-    { userId: 16, id: video.id, state: 'c', uploadTime: video.upload_time, ongoing: false, detail: video },
-  ] }
+  return {
+    userId: 16,
+    fetchedAt: 1,
+    fromCache: false,
+    missing: [],
+    rows: [
+      {
+        userId: 16,
+        id: video.id,
+        state: 'c',
+        uploadTime: video.upload_time,
+        ongoing: false,
+        detail: video,
+      },
+    ],
+  }
 }
+
 let root: TestElement
+const picker = vi.fn()
+
 const find = (predicate: (node: TestElement) => boolean): TestElement => {
   const node = root.all().find(predicate)
   if (!node) throw new Error('未找到测试节点')
   return node
 }
-const button = (text: string) => find((node) => node.tag === 'button' && node.textContent === text)
-const importStatus = () => find((node) => node.attributes.get('role') === 'status')
-async function importFiles(files: ReturnType<typeof csvFile>[]): Promise<void> {
-  startImport(files)
-  // 普通夹具立即返回文件内容，先让整批异步读取完成再检查反馈。
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  await vi.waitFor(() => expect(importStatus().textContent).toContain('本次导入'))
+const byClass = (name: string): TestElement =>
+  find((node) => node.classList.contains(name))
+const visibleButton = (text: string): TestElement =>
+  find((node) => node.tag === 'button' && node.textContent === text && node.visible())
+const statusText = (): string =>
+  find((node) => node.attributes.get('role') === 'status').textContent
+const sourceNames = (): string[] =>
+  root
+    .all()
+    .filter((node) => node.classList.contains('csv-source-name'))
+    .map((node) => node.textContent)
+const sourceRow = (name: string): TestElement =>
+  find((node) => node.classList.contains('csv-source') && node.textContent.includes(name))
+const rowButton = (name: string, text: string): TestElement => {
+  const row = sourceRow(name)
+  const node = row
+    .all()
+    .find((item) => item.tag === 'button' && item.textContent === text)
+  if (!node) throw new Error(`文件行缺少按钮：${text}`)
+  return node
 }
-function startImport(files: ReturnType<typeof csvFile>[]): void {
-  const input = find((node) => node.type === 'file')
-  input.files = files
-  input.emit('change')
+
+function stubWindow(withPicker = true): void {
+  vi.stubGlobal('window', {
+    showOpenFilePicker: withPicker ? picker : undefined,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    parent: { postMessage: vi.fn() },
+  })
 }
-async function mount(): Promise<void> {
+
+async function seed(handles: ViewHandle[]): Promise<void> {
+  const store = createMemoryCsvStore()
+  for (const handle of handles) {
+    const read = await readCsvFile(handle)
+    const registry = await store.load()
+    await store.addMany(
+      [{ sourceId: `seed-${handle.key}`, handle, summary: read.summary }],
+      registry.revision,
+    )
+  }
+  storeRef.current = store
+}
+
+async function mount(search = '?id=16'): Promise<void> {
+  vi.stubGlobal('location', { search })
   await mountPlayerStats(root as unknown as HTMLElement)
+}
+
+async function enterCsv(): Promise<void> {
+  visibleButton('本地 CSV').click()
+  await vi.waitFor(() => expect(byClass('csv-sources').visible()).toBe(true))
+}
+
+async function startRefresh(): Promise<void> {
+  visibleButton('刷新').click()
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  picker.mockReset()
+  storeRef.current = createMemoryCsvStore()
   root = new TestElement('div')
   vi.stubGlobal('document', { createElement: (tag: string) => new TestElement(tag), title: '' })
   vi.stubGlobal('location', { search: '?id=16' })
+  stubWindow()
   vi.mocked(loadPlayer).mockResolvedValue(loaded())
+  vi.mocked(fetchUserInfo).mockResolvedValue(null)
 })
 afterEach(() => vi.unstubAllGlobals())
 
-describe('玩家页 CSV 集成', () => {
-  it('网站初次失败后，从 CSV 切回网站在加载期间及失败后均为空', async () => {
-    const next = deferred<LoadedPlayer>()
-    vi.mocked(loadPlayer).mockRejectedValueOnce(new Error('首次失败')).mockReturnValueOnce(next.promise)
-    await mount()
-    await importFiles([csvFile('ok.csv')])
+describe('本地 CSV 关联清单', () => {
+  it('普通玩家页默认网站数据，不自动读取已关联文件', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    await seed([handle])
+    await mount('?id=16')
+    expect(loadPlayer).toHaveBeenCalled()
+    expect(byClass('player-name').textContent).toBe('#16')
+    expect(byClass('csv-sources').visible()).toBe(false)
+    expect(handle.reads).toBe(1)
+    expect(picker).not.toHaveBeenCalled()
+  })
+
+  it('切到本地 CSV 只恢复清单与上次摘要，等待刷新', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000, 6000))
+    await seed([handle])
+    await mount('?id=16')
+    await enterCsv()
+
+    expect(byClass('player-name').textContent).toBe('本地 CSV')
+    expect(byClass('player-id').textContent).toBe('1 个文件')
+    expect(sourceNames()).toEqual(['a.csv'])
+    expect(byClass('csv-source-meta').textContent).toContain('上次读取')
+    expect(byClass('csv-source-meta').textContent).toContain('2 局')
+    expect(byClass('csv-sources-note').textContent).toContain(
+      '已关联 1 个文件，点击「刷新」加载成绩',
+    )
+    expect(byClass('page-tabs').visible()).toBe(false)
+    expect(byClass('pb-grids').visible()).toBe(false)
+    expect(handle.reads).toBe(1)
+  })
+
+  it('刷新后整体加载并显示整批与逐文件变化', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    await seed([handle])
+    await mount('?id=16')
+    await enterCsv()
+
+    handle.text = csv(5000, 6000)
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(2))
     expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), { csv: true })
-    button('网站数据').click()
-    const assertEmptySite = () => {
-      expect(find((node) => node.tag === 'h1').textContent).toBe('#16')
-      expect(find((node) => node.classList.contains('player-meta')).textContent).not.toContain('CSV')
-      expect(root.all().filter((node) => node.classList.contains('pb-rowlabel'))).toHaveLength(0)
-      expect(root.all().filter((node) => node.classList.contains('top5-item'))).toHaveLength(0)
-      expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: false })
+    expect(byClass('csv-source-meta').textContent).toContain('已读取')
+    expect(byClass('csv-source-delta').textContent).toBe('1 → 2 局')
+    expect(statusText()).toContain('刷新完成')
+    expect(byClass('csv-sources-note').textContent).toContain('已加载 1 个文件、2 局')
+    expect(byClass('page-tabs').visible()).toBe(true)
+    expect(byClass('csv-source-meta').textContent).toContain('已读取')
+  })
+
+  it('首次选择多个文件时有效项关联，失败项明确列出', async () => {
+    const good = new ViewHandle('a.csv', csv(5000, 6000))
+    const bad = new ViewHandle('bad.csv', 'bad')
+    picker.mockResolvedValue([good, bad])
+    await mount('?id=16')
+    await enterCsv()
+
+    expect(sourceNames()).toEqual(['a.csv'])
+    expect(statusText()).toContain('已添加 1 个文件（2 局）')
+    expect(statusText()).toContain('bad.csv')
+    expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(2)
+    expect(byClass('page-tabs').visible()).toBe(true)
+  })
+
+  it('重复选择同一文件提示使用刷新，不形成重复绑定', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    picker.mockResolvedValue([handle])
+    await mount('?id=16')
+    await enterCsv()
+    const before = handle.reads
+
+    picker.mockResolvedValue([new ViewHandle('copy.csv', csv(6000), handle.key)])
+    visibleButton('添加 CSV').click()
+    await vi.waitFor(() => expect(statusText()).toContain('已在关联清单中'))
+    expect(sourceNames()).toEqual(['a.csv'])
+    expect(handle.reads).toBe(before)
+  })
+
+  it('同名文件来自不同目录时并存并带来源标记', async () => {
+    const first = new ViewHandle('stats.csv', csv(5000), 'dir-1')
+    const second = new ViewHandle('stats.csv', csv(6000), 'dir-2')
+    picker.mockResolvedValue([first, second])
+    await mount('?id=16')
+    await enterCsv()
+    expect(sourceNames()).toEqual(['stats.csv（来源 1）', 'stats.csv（来源 2）'])
+  })
+
+  it('刷新失败保留旧成绩与旧成功时间', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    await seed([handle])
+    await mount('?id=16')
+    await enterCsv()
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1))
+    const calls = updateAnalysis.mock.calls.length
+    const meta = byClass('csv-source-meta').textContent
+
+    handle.getFile = async () => {
+      throw new DOMException('gone', 'NotFoundError')
     }
-    assertEmptySite()
-    next.reject(new Error('再次失败'))
-    await next.promise.catch(() => {})
-    await Promise.resolve()
-    assertEmptySite()
+    await startRefresh()
+    await vi.waitFor(() => expect(statusText()).toContain('刷新失败'))
+    expect(statusText()).toContain('文件不可用，请重新关联')
+    expect(updateAnalysis.mock.calls.length).toBe(calls)
+    expect(byClass('csv-source-meta').textContent).toBe(meta)
   })
 
-  it.each(['成功', '失败'])('清除使多文件导入整批失效，旧读取%s不会恢复数据或提示', async (completion) => {
-    await mount()
-    await importFiles([csvFile('existing.csv')])
-    const slow = deferred<string>()
-    const read = vi.fn(() => slow.promise)
-    startImport([csvFile('staged.csv'), { ...csvFile('slow.csv'), text: read }])
-    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce())
-    button('清除 CSV').click()
-    if (completion === '成功') slow.resolve(CSV)
-    else slow.reject(new Error('已失效文件读取失败'))
-    await slow.promise.catch(() => {})
-    await Promise.resolve()
-    expect(find((node) => node.tag === 'h1').textContent).toBe('#16')
-    expect(importStatus().textContent).toBe('')
-    expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), { csv: false })
-    await importFiles([csvFile('fresh.csv')])
-    expect(find((node) => node.classList.contains('source-files') && node.tag === 'p').textContent)
-      .toBe('fresh.csv：1/1 局')
-    expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1)
+  it('需要授权时提供授权入口，授权后可正常刷新', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    handle.permission = 'prompt'
+    await seed([handle])
+    await mount('?id=16')
+    await enterCsv()
+    const reads = handle.reads
+
+    await startRefresh()
+    await vi.waitFor(() => expect(statusText()).toContain('需要授权读取'))
+    expect(handle.reads).toBe(reads)
+    expect(byClass('csv-source-flag').textContent).toBe('需要授权')
+
+    rowButton('a.csv', '授权读取').click()
+    await vi.waitFor(() => expect(statusText()).toContain('所有文件已授权'))
+
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1))
+    expect(statusText()).toContain('刷新完成')
   })
 
-  it.each([false, true])('网站已有 CSV=%s 时主动选择网站使旧导入失效', async (hasCsv) => {
-    await mount()
-    if (hasCsv) await importFiles([csvFile('existing.csv')])
-    const slow = deferred<string>()
-    startImport([{ ...csvFile('slow.csv'), text: () => slow.promise }])
-    const message = importStatus().textContent
-    button('网站数据').click()
-    slow.resolve(CSV)
-    await slow.promise
-    await Promise.resolve()
-    expect(find((node) => node.tag === 'h1').textContent).toBe('#16')
-    expect(importStatus().textContent).toBe(message)
-    expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), { csv: false })
-    if (hasCsv) {
-      button('本地 CSV').click()
-      expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1)
+  it('取消刷新保留旧统计，晚到的读取不提交', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    await seed([handle])
+    await mount('?id=16')
+    await enterCsv()
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1))
+    const calls = updateAnalysis.mock.calls.length
+
+    const gate = deferred<File>()
+    handle.gate = gate.promise
+    handle.reads = 0
+    await startRefresh()
+    await vi.waitFor(() => expect(handle.reads).toBe(1))
+    expect(byClass('csv-sources-note').textContent).toContain('正在读取')
+
+    visibleButton('取消读取').click()
+    await vi.waitFor(() => expect(statusText()).toContain('已取消读取'))
+    gate.resolve(handle.file())
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(updateAnalysis.mock.calls.length).toBe(calls)
+    expect(byClass('csv-source-meta').textContent).toContain('已读取')
+  })
+
+  it('移除单个来源后按剩余文件重新汇总', async () => {
+    const first = new ViewHandle('a.csv', csv(5000))
+    const second = new ViewHandle('b.csv', csv(6000, 7000))
+    await seed([first, second])
+    await mount('?id=16')
+    await enterCsv()
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(3))
+
+    rowButton('a.csv', '移除').click()
+    await vi.waitFor(() => expect(sourceNames()).toEqual(['b.csv']))
+    expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(2)
+    expect(statusText()).toContain('已移除 a.csv')
+  })
+
+  it('重新关联替换来源内容但保留清单位置', async () => {
+    const first = new ViewHandle('a.csv', csv(5000))
+    const second = new ViewHandle('b.csv', csv(6000))
+    await seed([first, second])
+    await mount('?id=16')
+    await enterCsv()
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(2))
+
+    picker.mockResolvedValue([new ViewHandle('c.csv', csv(7000, 8000))])
+    rowButton('b.csv', '重新关联').click()
+    await vi.waitFor(() => expect(sourceNames()).toEqual(['a.csv', 'c.csv']))
+    expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(3)
+    expect(statusText()).toContain('已重新关联 c.csv')
+  })
+
+  it('独立 CSV 移除全部使进行中的刷新失效并回到空态', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    await seed([handle])
+    await mount('?source=csv')
+    await vi.waitFor(() => expect(byClass('csv-sources').visible()).toBe(true))
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1))
+
+    const gate = deferred<File>()
+    handle.gate = gate.promise
+    handle.reads = 0
+    await startRefresh()
+    await vi.waitFor(() => expect(handle.reads).toBe(1))
+
+    visibleButton('移除全部').click()
+    await vi.waitFor(() => expect(byClass('csv-empty').visible()).toBe(true))
+    expect(sourceNames()).toEqual([])
+    gate.resolve(handle.file())
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(sourceNames()).toEqual([])
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+  })
+
+  it('添加读取期间切回网站，晚到读取不会自动切回 CSV', async () => {
+    const existing = new ViewHandle('a.csv', csv(5000))
+    await seed([existing])
+    await mount('?id=16')
+    await enterCsv()
+
+    const slow = new ViewHandle('b.csv', csv(6000))
+    const gate = deferred<File>()
+    slow.gate = gate.promise
+    picker.mockResolvedValue([slow])
+    visibleButton('添加 CSV').click()
+    await vi.waitFor(() => expect(slow.reads).toBe(1))
+
+    visibleButton('网站数据').click()
+    expect(byClass('player-name').textContent).toBe('#16')
+    gate.resolve(slow.file())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(byClass('player-name').textContent).toBe('#16')
+    expect(byClass('csv-sources').visible()).toBe(false)
+    expect(sourceNames()).toEqual(['a.csv'])
+    expect(byClass('player-meta').textContent).toContain('录像')
+  })
+
+  it('添加 CSV 选择器返回前切回网站，晚到选择不再新增关联', async () => {
+    const existing = new ViewHandle('a.csv', csv(5000))
+    await seed([existing])
+    await mount('?id=16')
+    await enterCsv()
+
+    const gate = deferred<ViewHandle[]>()
+    picker.mockReturnValueOnce(gate.promise)
+    visibleButton('添加 CSV').click()
+    await vi.waitFor(() => expect(picker).toHaveBeenCalledTimes(1))
+    visibleButton('网站数据').click()
+
+    const late = new ViewHandle('b.csv', csv(6000))
+    gate.resolve([late])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(byClass('player-name').textContent).toBe('#16')
+    expect(sourceNames()).toEqual(['a.csv'])
+    expect(late.reads).toBe(0)
+    expect((await storeRef.current.load()).sources.map((source) => source.name)).toEqual([
+      'a.csv',
+    ])
+  })
+
+  it('重新关联选择器返回前切回网站，晚到文件不会替换来源', async () => {
+    const first = new ViewHandle('a.csv', csv(5000))
+    const second = new ViewHandle('b.csv', csv(6000))
+    await seed([first, second])
+    await mount('?id=16')
+    await enterCsv()
+    await startRefresh()
+    await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(2))
+
+    const gate = deferred<ViewHandle[]>()
+    picker.mockReturnValueOnce(gate.promise)
+    rowButton('b.csv', '重新关联').click()
+    await vi.waitFor(() => expect(picker).toHaveBeenCalledTimes(1))
+    visibleButton('网站数据').click()
+
+    const late = new ViewHandle('c.csv', csv(7000))
+    gate.resolve([late])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(byClass('player-name').textContent).toBe('#16')
+    expect(sourceNames()).toEqual(['a.csv', 'b.csv'])
+    expect(late.reads).toBe(0)
+    expect((await storeRef.current.load()).sources.map((source) => source.name)).toEqual([
+      'a.csv',
+      'b.csv',
+    ])
+  })
+
+  it('降级模式切源后晚到的文件输入事件被丢弃', async () => {
+    stubWindow(false)
+    await mount('?id=16')
+    visibleButton('本地 CSV').click()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(sourceNames()).toEqual([])
+
+    visibleButton('网站数据').click()
+    const input = find((node) => node.type === 'file')
+    input.files = [{ name: 'a.csv', size: CSV.length, text: async () => CSV }]
+    input.emit('change')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(byClass('player-name').textContent).toBe('#16')
+    expect(sourceNames()).toEqual([])
+    expect((await storeRef.current.load()).sources).toEqual([])
+  })
+
+  it('恢复清单期间切回网站，不再打开文件选择器', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    const base = createMemoryCsvStore()
+    const read = await readCsvFile(handle)
+    await base.addMany([{ sourceId: 'seed-a', handle, summary: read.summary }], 0)
+
+    const gate = deferred<void>()
+    let hold = true
+    let started!: () => void
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    storeRef.current = {
+      ...base,
+      load: async () => {
+        const registry = await base.load()
+        if (hold) {
+          hold = false
+          started()
+          await gate.promise
+        }
+        return registry
+      },
     }
+
+    await mount('?id=16')
+    visibleButton('本地 CSV').click()
+    await startedPromise
+    visibleButton('网站数据').click()
+    gate.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(picker).not.toHaveBeenCalled()
+    expect(byClass('player-name').textContent).toBe('#16')
+    expect(byClass('csv-sources').visible()).toBe(false)
   })
 
-  it('后批次取代未完成批次，旧批次不追加记录或覆盖新反馈', async () => {
-    await mount()
-    await importFiles([csvFile('existing.csv')])
-    const slow = deferred<string>()
-    const read = vi.fn(() => slow.promise)
-    startImport([csvFile('staged.csv'), { ...csvFile('slow.csv'), text: read }])
-    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce())
-    startImport([csvFile('new.csv'), csvFile('bad.csv', 'bad')])
-    await vi.waitFor(() => expect(importStatus().textContent).toContain('bad.csv'))
-    const message = importStatus().textContent
-    slow.resolve(CSV)
-    await slow.promise
-    await Promise.resolve()
-    expect(importStatus().textContent).toBe(message)
-    const videos = updateAnalysis.mock.lastCall?.[0]
-    expect(videos).toHaveLength(2)
-    expect(videos.map((video: { id: number }) => video.id)).toEqual([-1, -2])
-    expect(find((node) => node.classList.contains('source-files') && node.tag === 'p').textContent)
-      .toBe('existing.csv：1/1 局 · new.csv：1/1 局')
-  })
+  it('空清单重获焦点时发现其他页面新增的关联', async () => {
+    const base = createMemoryCsvStore()
+    storeRef.current = base
+    await mount('?source=csv')
+    expect(byClass('csv-empty').visible()).toBe(true)
 
-  it.each(['成绩概况', '赛博大表'])('%s 可见全部失败、部分失败和超大文件提示', async (page) => {
-    await mount()
-    button(page).click()
-    await importFiles([csvFile('<坏文件>.csv', 'bad')])
-    expect(importStatus().visible()).toBe(true)
-    expect(importStatus().textContent).toContain('<坏文件>.csv')
-    expect(importStatus().textContent).toContain('失败 1 个文件')
-    expect(importStatus().children).toHaveLength(0)
-    await importFiles([csvFile('ok.csv'), csvFile('bad.csv', 'bad')])
-    await vi.waitFor(() => expect(importStatus().textContent).toContain('成功 1 个文件'))
-    expect(importStatus().visible()).toBe(true)
-    expect(importStatus().textContent).toContain('bad.csv')
-    await importFiles([csvFile('big.csv', '', 21 * 1024 * 1024)])
-    await vi.waitFor(() => expect(root.textContent).toContain('big.csv：超过 20 MB'))
-    expect(importStatus().visible()).toBe(true)
-  })
+    const handle = new ViewHandle('b.csv', csv(6000))
+    const read = await readCsvFile(handle)
+    await base.addMany([{ sourceId: 'src-b', handle, summary: read.summary }], 0)
 
-  it('无效行详情包含文件和物理行号，并限制展示条数', async () => {
-    await mount()
-    const badRows = Array(60).fill(ROW.replace(',5.00,', ',0,')).join('\n')
-    await importFiles([csvFile('rows.csv', `${CSV}\n${badRows}`)])
-    expect(root.textContent).toContain('rows.csv 第 3 行')
-    expect(root.textContent).toContain('仅显示前 50 项')
-    const details = find((node) => node.tag === 'details')
-    expect(details.all().filter((node) => node.tag === 'li')).toHaveLength(50)
-  })
+    const win = window as unknown as {
+      addEventListener: ReturnType<typeof vi.fn>
+    }
+    const focus = win.addEventListener.mock.calls.find(([type]) => type === 'focus')?.[1] as
+      | (() => void)
+      | undefined
+    expect(focus).toBeTruthy()
+    focus!()
+    await vi.waitFor(() => expect(sourceNames()).toEqual(['b.csv']))
 
-  it('网站旧请求取消后不覆盖 CSV 导入错误', async () => {
-    const old = deferred<LoadedPlayer>()
-    vi.mocked(loadPlayer).mockReturnValueOnce(old.promise)
-    await mount()
-    await importFiles([csvFile('ok.csv'), csvFile('bad.csv', 'bad')])
-    const message = importStatus().textContent
-    expect(vi.mocked(loadPlayer).mock.calls[0]![1]!.signal!.aborted).toBe(true)
-    old.reject(new DOMException('Aborted', 'AbortError'))
-    await old.promise.catch(() => {})
-    await Promise.resolve()
-    expect(importStatus().textContent).toBe(message)
-    expect(find((node) => node.classList.contains('player-status')).textContent).toBe('')
-  })
-
-  it.each(['成功', '失败'])('快速切回网站后旧请求%s不能清理新任务', async (completion) => {
-    const old = deferred<LoadedPlayer>()
-    const next = deferred<LoadedPlayer>()
-    vi.mocked(loadPlayer).mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise)
-    await mount()
-    await importFiles([csvFile('ok.csv')])
-    button('网站数据').click()
-    expect(vi.mocked(loadPlayer)).toHaveBeenCalledTimes(2)
-    const oldOptions = vi.mocked(loadPlayer).mock.calls[0]![1]!
-    const nextOptions = vi.mocked(loadPlayer).mock.calls[1]![1]!
-    if (completion === '成功') old.resolve(loaded())
-    else old.reject(new Error('旧任务失败'))
-    await old.promise.catch(() => {})
-    await Promise.resolve()
-    oldOptions.onProgress?.({ done: 9, total: 9 })
-    expect(button('刷新').disabled).toBe(true)
-    expect(root.textContent).not.toContain('9/9')
-    button('取消').click()
-    expect(nextOptions.signal!.aborted).toBe(true)
-    next.resolve(loaded())
-    await next.promise
-  })
-
-  it('补抓未过审的旧任务晚到，不覆盖 CSV 或显示加载状态', async () => {
-    const initial = loaded()
-    initial.rows.push({ userId: 16, id: 124, state: 'a', uploadTime: '', ongoing: false, detail: null })
-    vi.mocked(loadPlayer).mockResolvedValueOnce(initial)
-    const pending = deferred<Awaited<ReturnType<typeof ensureDetails>>>()
-    vi.mocked(ensureDetails).mockReturnValueOnce(pending.promise)
-    await mount()
-    const check = find((node) => node.tag === 'input' && node.title.startsWith('把未审核'))
-    check.checked = true
-    check.emit('change')
-    expect(ensureDetails).toHaveBeenCalledTimes(1)
-    await importFiles([csvFile('ok.csv')])
-    vi.mocked(ensureDetails).mock.calls[0]![3]!.onProgress?.({ done: 1, total: 1 })
-    pending.resolve({ rows: initial.rows, missing: [] })
-    await pending.promise
-    await Promise.resolve()
-    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
-    expect(button('取消').visible()).toBe(false)
-    expect(find((node) => node.classList.contains('player-status')).textContent).toBe('')
-  })
-
-  it('PB 只画有成绩的十位分组，异常网站 BBBV 不进入渲染', async () => {
-    const data = loaded()
-    data.rows.push({ ...data.rows[0]!, id: 124, detail: { ...data.rows[0]!.detail!, id: 124, bv: 1e20 } })
-    vi.mocked(loadPlayer).mockResolvedValueOnce(data)
-    await mount()
-    expect(root.all().filter((node) => node.classList.contains('pb-rowlabel'))
-      .map((node) => node.textContent)).toEqual(['10–19'])
-    await importFiles([csvFile('sparse.csv', `${CSV}\n${ROW.replace(',12,2.40,', ',54,2.40,')}`)])
-    const labels = root.all().filter((node) => node.classList.contains('pb-rowlabel'))
-    expect(labels.map((node) => node.textContent)).toEqual(['10–19', '50–59'])
+    expect(byClass('csv-sources').visible()).toBe(true)
+    expect(byClass('csv-empty').visible()).toBe(false)
+    expect(byClass('csv-sources-note').textContent).toContain('已关联 1 个文件')
+    expect(byClass('csv-sources-note').textContent).toContain('点击「刷新」加载成绩')
+    expect(handle.reads).toBe(1)
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
   })
 })
 
-describe('独立 CSV 启动模式', () => {
-  async function mountCsv(): Promise<void> {
-    vi.stubGlobal('location', { search: '?source=csv' })
-    await mount()
-  }
-
-  it('首次打开不调用玩家接口，显示空态并隐藏网站控件', async () => {
-    await mountCsv()
+describe('独立 CSV 与降级模式', () => {
+  it('首次打开不调用玩家接口，显示空态与格式说明', async () => {
+    await mount('?source=csv')
     expect(loadPlayer).not.toHaveBeenCalled()
     expect(ensureDetails).not.toHaveBeenCalled()
     expect(fetchUserInfo).not.toHaveBeenCalled()
-    expect(createAnalysisViewMock).toHaveBeenLastCalledWith({
-      autoSiteAnchors: false,
-    })
-    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
+    expect(createAnalysisViewMock).toHaveBeenLastCalledWith({ autoSiteAnchors: false })
+    expect(byClass('csv-empty').visible()).toBe(true)
+    expect(visibleButton('选择 CSV 文件').visible()).toBe(true)
+    expect(byClass('page-tabs').visible()).toBe(false)
+    expect(byClass('player-name').textContent).toBe('本地 CSV')
     expect(document.title).toBe('本地 CSV · 元神助手')
-    expect(find((node) => node.classList.contains('csv-empty')).visible()).toBe(true)
-    expect(button('选择 CSV 文件').visible()).toBe(true)
-    expect(button('网站数据').visible()).toBe(false)
-    expect(button('本地 CSV').visible()).toBe(false)
-    expect(button('刷新').visible()).toBe(false)
-    expect(root.all().filter((node) => node.tag === 'button' && node.textContent === '我的成绩'))
-      .toHaveLength(0)
-    expect(find((node) => node.classList.contains('page-tabs')).visible()).toBe(false)
     expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
   })
 
-  it('导入后可切换成绩概况，清除后仍留在 CSV 空态', async () => {
-    await mountCsv()
-    const empty = find((node) => node.classList.contains('csv-empty'))
-    await importFiles([csvFile('ok.csv')])
-    expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), { csv: true })
-    expect(empty.visible()).toBe(false)
-    expect(button('成绩概况').visible()).toBe(true)
-    expect(button('赛博大表').visible()).toBe(true)
+  it('没有文件句柄 API 时回退到文件输入并提示无法记住', async () => {
+    stubWindow(false)
+    await mount('?source=csv')
+    expect(byClass('csv-empty-remember').visible()).toBe(true)
+    expect(byClass('csv-empty-remember').textContent).toContain('不支持记住文件')
 
-    button('成绩概况').click()
-    expect(find((node) => node.classList.contains('pb-grids')).visible()).toBe(true)
-
-    button('清除 CSV').click()
-    expect(empty.visible()).toBe(true)
-    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
-    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
-    expect(loadPlayer).not.toHaveBeenCalled()
-  })
-
-  it('首次读取期间可取消导入，旧批次失效并回到空态', async () => {
-    await mountCsv()
-    const empty = find((node) => node.classList.contains('csv-empty'))
-    const slow = deferred<string>()
-    startImport([{ ...csvFile('slow.csv'), text: () => slow.promise }])
-
-    expect(find((node) => node.classList.contains('csv-empty-note')).visible()).toBe(true)
-    const cancel = button('取消导入')
-    expect(cancel.visible()).toBe(true)
-    cancel.click()
-    expect(cancel.visible()).toBe(false)
-    expect(find((node) => node.classList.contains('csv-empty-note')).visible()).toBe(false)
-    expect(empty.visible()).toBe(true)
-    expect(importStatus().textContent).toBe('')
-
-    slow.resolve(CSV)
-    await slow.promise
-    await Promise.resolve()
-    // 旧读取完成后不能提交数据、恢复提示或改变页面。
-    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
-    expect(empty.visible()).toBe(true)
-    expect(importStatus().textContent).toBe('')
-    expect(find((node) => node.tag === 'h1').textContent).toBe('本地 CSV')
+    const input = find((node) => node.type === 'file')
+    visibleButton('选择 CSV 文件').click()
+    input.files = [{ name: 'a.csv', size: CSV.length, text: async () => CSV }]
+    input.emit('change')
+    await vi.waitFor(() => expect(sourceNames()).toEqual(['a.csv']))
+    expect(byClass('csv-empty').visible()).toBe(false)
+    expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(1)
   })
 })
 
 describe('站内嵌入模式', () => {
-  it('自动带入玩家 ID，只保留赛博大表与加载操作', async () => {
-    vi.stubGlobal('location', { search: '?id=16&embed=analysis' })
-    await mount()
+  it('不显示 CSV 关联控件，也不自动恢复清单读取文件', async () => {
+    const handle = new ViewHandle('a.csv', csv(5000))
+    await seed([handle])
+    await mount('?id=16&embed=analysis')
     expect(loadPlayer).toHaveBeenCalledWith(16, expect.objectContaining({ force: false }))
-    expect(createAnalysisViewMock).toHaveBeenLastCalledWith({
-      autoSiteAnchors: true,
-    })
-    expect(find((node) => node.tag === 'h1').textContent).toBe('#16')
-    expect(find((node) => node.classList.contains('player-id')).textContent).toBe('ID 16')
-    expect(find((node) => node.classList.contains('page-tabs')).visible()).toBe(false)
-    expect(button('成绩概况').visible()).toBe(false)
-    expect(button('导入 CSV').visible()).toBe(false)
-    expect(button('我的成绩').visible()).toBe(false)
-    expect(button('刷新').visible()).toBe(true)
-    const panes = root.all().filter((node) => node.classList.contains('player-pane') && node.visible())
-    expect(panes).toHaveLength(1)
-    expect(panes[0]!.classList.contains('hidden')).toBe(false)
+    expect(byClass('csv-sources').visible()).toBe(false)
+    expect(byClass('csv-empty').visible()).toBe(false)
+    expect(
+      root.all().filter((node) => node.tag === 'button' && node.textContent === '添加 CSV' && node.visible()),
+    ).toHaveLength(0)
+    expect(byClass('page-tabs').visible()).toBe(false)
+    expect(handle.reads).toBe(1)
   })
 
   it('加载进度与失败原因在只有大表时仍然可见', async () => {
     const pending = deferred<LoadedPlayer>()
     vi.mocked(loadPlayer).mockReturnValueOnce(pending.promise)
-    vi.stubGlobal('location', { search: '?id=16&embed=analysis' })
-    await mount()
-
-    const status = find((node) => node.classList.contains('player-status'))
+    await mount('?id=16&embed=analysis')
+    const status = byClass('player-status')
     expect(status.visible()).toBe(true)
     expect(status.textContent).toBe('正在获取录像列表…')
 
@@ -418,11 +649,40 @@ describe('站内嵌入模式', () => {
   })
 })
 
-describe('启动参数错误', () => {
-  // 参数边界由 player-stats-launch.test.ts 覆盖，这里验证错误不会启动页面或请求。
-  it('参数错误时不挂载大表、不加载数据', async () => {
-    vi.stubGlobal('location', { search: '?id=0' })
+describe('原有网站行为', () => {
+  it('补抓未过审的旧任务晚到，不覆盖 CSV 或显示加载状态', async () => {
+    const initial = loaded()
+    initial.rows.push({
+      userId: 16,
+      id: 124,
+      state: 'a',
+      uploadTime: '',
+      ongoing: false,
+      detail: null,
+    })
+    vi.mocked(loadPlayer).mockResolvedValueOnce(initial)
+    const pending = deferred<Awaited<ReturnType<typeof ensureDetails>>>()
+    vi.mocked(ensureDetails).mockReturnValueOnce(pending.promise)
+    await seed([new ViewHandle('a.csv', csv(5000))])
     await mount()
+    const check = find(
+      (node) => node.tag === 'input' && node.title.startsWith('把未审核'),
+    )
+    check.checked = true
+    check.emit('change')
+    expect(ensureDetails).toHaveBeenCalledTimes(1)
+
+    await enterCsv()
+    vi.mocked(ensureDetails).mock.calls[0]![3]!.onProgress?.({ done: 1, total: 1 })
+    pending.resolve({ rows: initial.rows, missing: [] })
+    await pending.promise
+    await Promise.resolve()
+    expect(byClass('player-name').textContent).toBe('本地 CSV')
+    expect(byClass('player-status').textContent).toBe('')
+  })
+
+  it('启动参数错误时不挂载页面或请求数据', async () => {
+    await mount('?id=0')
     expect(root.textContent).toContain('缺少合法的用户 ID')
     expect(root.all().filter((node) => node.tag === 'main')).toHaveLength(0)
     expect(loadPlayer).not.toHaveBeenCalled()

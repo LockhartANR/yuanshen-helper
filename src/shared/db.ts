@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { IdentifierItem } from '../features/user-search/api'
 import type { UserRecord } from '../features/user-search/model'
+import type { CsvSourceRegistry } from '../features/player-stats/csv-sources'
 import type { VideoDetail } from '../features/player-stats/model'
 import type { WatchFile } from '../features/upload-watch/types'
 
@@ -79,12 +80,25 @@ interface YuanshenDB extends DBSchema {
     key: number
     value: PlayerMeta
   }
+  csvSources: {
+    key: string
+    value: CsvSourceRegistry
+  }
 }
 
 const DB_NAME = 'yuanshen-helper'
-const DB_VERSION = 3
+const DB_VERSION = 4
 
 let dbPromise: Promise<IDBPDatabase<YuanshenDB>> | null = null
+const blockedListeners = new Set<(version: number) => void>()
+
+/** 数据库升级被其他页面占用时通知界面；不能一直无提示等待。 */
+export function onDbBlocked(listener: (version: number) => void): () => void {
+  blockedListeners.add(listener)
+  return () => {
+    blockedListeners.delete(listener)
+  }
+}
 
 /**
  * 所有 store 共用一个数据库连接和版本号。
@@ -93,6 +107,18 @@ let dbPromise: Promise<IDBPDatabase<YuanshenDB>> | null = null
 export function getDb(): Promise<IDBPDatabase<YuanshenDB>> {
   if (!dbPromise) {
     dbPromise = openDB<YuanshenDB>(DB_NAME, DB_VERSION, {
+      blocked(_currentVersion, nextVersion) {
+        for (const listener of blockedListeners) listener(nextVersion ?? DB_VERSION)
+      },
+      blocking(_currentVersion, _nextVersion, event) {
+        // 别的页面要升级：主动断开本页连接，下次 getDb() 按新版本重开。
+        const target = event.target as IDBDatabase | null
+        target?.close()
+        dbPromise = null
+      },
+      terminated() {
+        dbPromise = null
+      },
       upgrade(db) {
         if (!db.objectStoreNames.contains('users')) {
           const store = db.createObjectStore('users', { keyPath: 'id' })
@@ -118,8 +144,15 @@ export function getDb(): Promise<IDBPDatabase<YuanshenDB>> {
         if (!db.objectStoreNames.contains('playerMeta')) {
           db.createObjectStore('playerMeta', { keyPath: 'userId' })
         }
+        if (!db.objectStoreNames.contains('csvSources')) {
+          db.createObjectStore('csvSources', { keyPath: 'id' })
+        }
       },
     })
+      .catch((error: unknown) => {
+        dbPromise = null
+        throw error
+      })
   }
   return dbPromise
 }

@@ -1,4 +1,5 @@
 import { SITE_ORIGIN } from '../../shared/constants'
+import { onDbBlocked } from '../../shared/db'
 import type { PlayerVideoRow } from '../../shared/db'
 import { formatCount, formatDateTime, formatShortDate } from '../../shared/format'
 import { askSelfId, resolveSelfId } from '../../shared/self-id'
@@ -8,12 +9,20 @@ import { createAnalysisView } from './analysis-view'
 import { loadAnalysisSettings } from './analysis-settings'
 import { computePb, computeTop5, eligible, bvsOf, joinVideos, stnbOf } from './compute'
 import { configureColors, dateColorStyle, medianOf, pbColorStyle } from './colors'
+import { createCsvSession } from './csv-session'
+import type { CsvSession } from './csv-session'
+import {
+  canRememberCsvFiles,
+  createCsvStore,
+  formatValidDelta,
+  pickCsvFiles,
+} from './csv-sources'
+import type { CsvFileHandle } from './csv-sources'
 import { parsePlayerLaunch } from './launch'
 import { softwareIcon } from './software-icon'
 import type { Level, Top5Group, TopStat, Video } from './model'
 import { LEVELS, MAX_BV, softwareLabel } from './model'
 import { ensureDetails, loadPlayer } from './service'
-import { parseStatsCsv } from './csv'
 
 const LEVEL_LABELS: Record<Level, string> = { b: '初级', i: '中级', e: '高级' }
 const STAT_LABELS: Record<TopStat, string> = { time: '用时', bvs: '3BVS', stnb: 'STNB' }
@@ -45,13 +54,6 @@ interface UiState {
   fromCache: boolean
   loading: boolean
   message: string
-}
-
-interface CsvImport {
-  name: string
-  total: number
-  videos: Video[]
-  invalidRows: number
 }
 
 export interface PlayerStatsMountOptions {
@@ -111,15 +113,18 @@ export async function mountPlayerStats(
 
   let controller: AbortController | null = null
   let requestVersion = 0
-  let csvImportVersion = 0
-  /** 是否有一批 CSV 正在读取（尚未提交）；用于在空态提供「取消导入」。 */
-  let csvImporting = false
   let pendingUnapproved = false
   let source: 'site' | 'csv' = 'site'
   let page: 'score' | 'analysis' = launch.initialPage
-  const csvImports: CsvImport[] = []
-  let csvIdBase = 0
   let siteName = siteUserId === null ? '本地 CSV' : `#${siteUserId}`
+  let appliedSnapshot = -1
+  /** 覆盖「恢复清单 → 选择文件 → 读取 → 自动切源」的视图操作标记。 */
+  let csvFlow = 0
+  /** 降级模式的文件输入在 change 事件返回前必须仍属于同一次操作。 */
+  type CsvSelection =
+    | { kind: 'add'; flow: number }
+    | { kind: 'relink'; flow: number; sourceId: string }
+  let pendingFileInput: CsvSelection | null = null
 
   // ---- 头部 ----
   const nameNode = el('h1', 'player-name', siteUserId === null ? '本地 CSV' : `#${siteUserId}`)
@@ -269,15 +274,12 @@ export async function mountPlayerStats(
   const csvSource = el('button', 'source-tab', '本地 CSV')
   siteSource.type = 'button'
   csvSource.type = 'button'
-  const importCsvButton = el('button', 'button hidden', '导入 CSV')
-  importCsvButton.type = 'button'
-  const clearCsvButton = el('button', 'button hidden', '清除 CSV')
-  clearCsvButton.type = 'button'
   const csvInput = el('input', 'hidden')
   csvInput.type = 'file'
   csvInput.accept = '.csv,text/csv'
   csvInput.multiple = true
-  const csvFilesNote = el('p', 'source-files hidden')
+  sourceBar.append(siteSource, csvSource, csvInput)
+
   const csvFeedback = el('div', 'source-files hidden')
   const csvStatus = el('p')
   csvStatus.setAttribute('role', 'status')
@@ -285,7 +287,6 @@ export async function mountPlayerStats(
   csvStatus.setAttribute('aria-atomic', 'true')
   const csvErrorDetails = el('details', 'hidden')
   csvFeedback.append(csvStatus, csvErrorDetails)
-  sourceBar.append(siteSource, csvSource, importCsvButton, clearCsvButton, csvInput)
 
   // 独立 CSV 的空态：只有用户点击才打开文件选择器，不自动联网、不自动导入。
   const csvEmpty = el('section', 'csv-empty hidden')
@@ -293,23 +294,51 @@ export async function mountPlayerStats(
   const csvEmptyText = el(
     'p',
     'csv-empty-text',
-    '导入本地 CSV，支持导入多个 Arbiter / 元扫雷 CSV 文件，无去重，请直接导入各软件原始 CSV，无需手动合并。',
+    '首次使用选择一个或多个本地 CSV：扩展会记住这些文件，之后重新打开本页，点击「刷新」就能读取最新内容，不用每次重新选择。支持 Arbiter / 元扫雷 CSV 文件，多文件直接合并、不去重。',
   )
   const csvEmptyButton = el('button', 'button primary', '选择 CSV 文件')
   csvEmptyButton.type = 'button'
-  csvEmptyButton.addEventListener('click', () => csvInput.click())
-  const csvCancelButton = el('button', 'button hidden', '取消导入')
-  csvCancelButton.type = 'button'
-  csvCancelButton.addEventListener('click', clearCsv)
+  const csvEmptyCancelButton = el('button', 'button hidden', '取消读取')
+  csvEmptyCancelButton.type = 'button'
   const csvEmptyActions = el('div', 'csv-empty-actions')
-  csvEmptyActions.append(csvEmptyButton, csvCancelButton)
-  const csvImportingNote = el('p', 'csv-empty-note hidden', '正在读取 CSV 文件…')
+  csvEmptyActions.append(csvEmptyButton, csvEmptyCancelButton)
+  const csvEmptyNote = el('p', 'csv-empty-note hidden')
+  const csvEmptyRemember = el(
+    'p',
+    'csv-empty-note csv-empty-remember hidden',
+    '当前浏览器不支持记住文件，重新打开后需要再次选择。',
+  )
   const csvEmptyFormat = el('details', 'csv-empty-format')
   csvEmptyFormat.append(
     el('summary', undefined, 'CSV 格式说明'),
     el('p', undefined, CSV_FORMAT_HINT),
   )
-  csvEmpty.append(csvEmptyTitle, csvEmptyText, csvEmptyActions, csvImportingNote, csvEmptyFormat)
+  csvEmpty.append(
+    csvEmptyTitle,
+    csvEmptyText,
+    csvEmptyActions,
+    csvEmptyNote,
+    csvEmptyRemember,
+    csvEmptyFormat,
+  )
+
+  // 关联清单：独立 CSV 页与普通玩家页的本地 CSV 模式共用。
+  const csvPanel = el('section', 'csv-sources hidden')
+  const csvPanelHead = el('div', 'csv-sources-head')
+  const csvPanelTitle = el('h2', 'card-title', '本地 CSV 文件')
+  const csvPanelActions = el('div', 'csv-source-actions')
+  const csvAddButton = el('button', 'button', '添加 CSV')
+  const csvRefreshButton = el('button', 'button primary', '刷新')
+  const csvCancelButton = el('button', 'button hidden', '取消读取')
+  const csvClearButton = el('button', 'button', '移除全部')
+  for (const node of [csvAddButton, csvRefreshButton, csvCancelButton, csvClearButton]) {
+    node.type = 'button'
+  }
+  csvPanelActions.append(csvAddButton, csvRefreshButton, csvCancelButton, csvClearButton)
+  csvPanelHead.append(csvPanelTitle, csvPanelActions)
+  const csvPanelNote = el('p', 'csv-sources-note')
+  const csvList = el('ul', 'csv-source-list')
+  csvPanel.append(csvPanelHead, csvPanelNote, csvList)
 
   const scorePane = el('div', 'player-pane')
   scorePane.append(filters, notice, pbCard, topCard)
@@ -325,9 +354,9 @@ export async function mountPlayerStats(
   wrap.append(
     header,
     sourceBar,
-    csvFilesNote,
-    csvFeedback,
     csvEmpty,
+    csvPanel,
+    csvFeedback,
     // 加载进度、失败原因和缺失明细提示由成绩概况与赛博大表共用，
     // 否则嵌入模式（只有大表）看不到任何加载状态。
     status,
@@ -337,14 +366,46 @@ export async function mountPlayerStats(
   )
   root.replaceChildren(wrap)
 
+  const persistentCsv = canRememberCsvFiles()
+  const session: CsvSession = createCsvSession({
+    store: createCsvStore(persistentCsv),
+    onChange: () => {
+      if (source === 'csv') syncCsvSnapshot()
+      renderHeaderIdentity()
+      renderCsv()
+      render()
+    },
+  })
+  const offDbBlocked = onDbBlocked(() => {
+    session.setMessage(
+      '本地数据库需要升级但被其他页面占用：请关闭或刷新其他元神助手页面后重试。',
+    )
+  })
+
+  // 清单恢复后、成绩尚未加载时，主区域只提示刷新，不把上次局数当作当前成绩。
+  function csvWaiting(): boolean {
+    return (
+      source === 'csv' &&
+      session.state.ready &&
+      session.state.sources.length > 0 &&
+      !session.hasSnapshot()
+    )
+  }
+
   function renderPage(): void {
-    const empty = standaloneCsv && csvImports.length === 0
+    const empty =
+      standaloneCsv && session.state.ready && session.state.sources.length === 0
+    const waiting = csvWaiting()
     sourceBar.classList.toggle('hidden', embedded || empty)
-    pageTabs.classList.toggle('hidden', embedded || empty)
+    pageTabs.classList.toggle('hidden', embedded || empty || waiting)
     csvEmpty.classList.toggle('hidden', !empty)
-    status.classList.toggle('hidden', empty)
-    scorePane.classList.toggle('hidden', empty || page !== 'score')
-    analysisPane.classList.toggle('hidden', empty || page !== 'analysis')
+    csvPanel.classList.toggle(
+      'hidden',
+      embedded || !(source === 'csv' && session.state.sources.length > 0),
+    )
+    status.classList.toggle('hidden', empty || source === 'csv')
+    scorePane.classList.toggle('hidden', empty || waiting || page !== 'score')
+    analysisPane.classList.toggle('hidden', empty || waiting || page !== 'analysis')
     scoreTab.classList.toggle('active', page === 'score')
     analysisTab.classList.toggle('active', page === 'analysis')
     scoreTab.setAttribute('aria-pressed', String(page === 'score'))
@@ -361,49 +422,108 @@ export async function mountPlayerStats(
   analysisTab.addEventListener('click', () => showPage('analysis'))
 
   siteSource.addEventListener('click', () => {
-    invalidateCsvImport()
+    session.cancel()
+    session.clearMessage()
     setSource('site')
   })
   csvSource.addEventListener('click', () => {
-    invalidateCsvImport()
-    if (csvImports.length === 0) csvInput.click()
-    else setSource('csv')
+    void enterCsvSource()
   })
-  importCsvButton.addEventListener('click', () => csvInput.click())
-  clearCsvButton.addEventListener('click', clearCsv)
+  csvEmptyButton.addEventListener('click', () => {
+    const flow = invalidateCsvFlow()
+    void selectCsvFiles({ kind: 'add', flow })
+  })
+  csvEmptyCancelButton.addEventListener('click', () => session.cancel())
+  csvAddButton.addEventListener('click', () => {
+    const flow = invalidateCsvFlow()
+    void selectCsvFiles({ kind: 'add', flow })
+  })
+  csvRefreshButton.addEventListener('click', () => void session.refreshAll())
+  csvCancelButton.addEventListener('click', () => session.cancel())
+  csvClearButton.addEventListener('click', () => void removeAllCsv())
   csvInput.addEventListener('change', () => {
     const files = csvInput.files ? [...csvInput.files] : []
     csvInput.value = ''
-    void importCsvFiles(files)
+    const context = pendingFileInput
+    pendingFileInput = null
+    // 没有有效的待处理上下文（例如切源后清掉标记）时直接丢弃晚到事件。
+    if (!context || context.flow !== csvFlow) return
+    void applyCsvSelection(context, files.map(fileHandle))
   })
 
-  /** 使所有未完成批次失效；已完成数据由调用方决定是否清空。 */
-  function invalidateCsvImport(): void {
-    csvImportVersion += 1
-    if (!csvImporting) return
-    csvImporting = false
-    renderCsvImporting()
+  /** 降级模式：浏览器没有文件句柄 API，只能临时读取本次选择的 File。 */
+  function fileHandle(file: File): CsvFileHandle {
+    const handle = {
+      name: file.name,
+      file,
+      getFile: async (): Promise<File> => file,
+      queryPermission: async (): Promise<PermissionState> => 'granted',
+      requestPermission: async (): Promise<PermissionState> => 'granted',
+      isSameEntry: async (other: CsvFileHandle): Promise<boolean> =>
+        (other as CsvFileHandle & { file?: File }).file === file,
+    }
+    return handle
   }
 
-  /** 清除已完成数据并使读取中的批次失效；普通玩家页恢复网站数据。 */
-  function clearCsv(): void {
-    invalidateCsvImport()
-    csvImports.length = 0
-    renderCsvResult('')
-    if (!standaloneCsv) {
-      setSource('site')
+  function invalidateCsvFlow(): number {
+    csvFlow += 1
+    pendingFileInput = null
+    return csvFlow
+  }
+
+  async function enterCsvSource(): Promise<void> {
+    if (source === 'csv') return
+    const flow = invalidateCsvFlow()
+    if (!session.state.ready) await session.restore()
+    if (flow !== csvFlow || source !== 'site') return
+    if (session.state.sources.length === 0) {
+      await selectCsvFiles({ kind: 'add', flow })
       return
     }
-    state.message = ''
-    renderSourceUi()
-    renderHeaderIdentity()
-    renderCsvFiles()
-    rebuild()
+    setSource('csv')
   }
 
-  function renderCsvImporting(): void {
-    csvCancelButton.classList.toggle('hidden', !csvImporting)
-    csvImportingNote.classList.toggle('hidden', !csvImporting)
+  /** 两种选择器与添加 / 重新关联共用同一上下文，晚到结果不能变成新操作。 */
+  async function selectCsvFiles(selection: CsvSelection): Promise<void> {
+    if (selection.flow !== csvFlow || session.state.loading) return
+    if (!persistentCsv) {
+      pendingFileInput = selection
+      csvInput.multiple = selection.kind === 'add'
+      csvInput.click()
+      return
+    }
+    try {
+      const handles = await pickCsvFiles(selection.kind === 'add')
+      await applyCsvSelection(selection, handles)
+    } catch (error) {
+      if (selection.flow !== csvFlow || isAbortError(error)) return
+      session.setMessage(`选择文件失败：${errorMessage(error)}`)
+    }
+  }
+
+  async function applyCsvSelection(
+    selection: CsvSelection,
+    handles: CsvFileHandle[],
+  ): Promise<void> {
+    if (selection.flow !== csvFlow || handles.length === 0) return
+    const result = selection.kind === 'add'
+      ? await session.addFiles(handles)
+      : await session.relink(selection.sourceId, handles[0]!)
+    if (selection.flow !== csvFlow) return
+    if (selection.kind === 'add' && result === 'success' && source === 'site') {
+      setSource('csv')
+    }
+  }
+
+  async function removeCsvSource(sourceId: string): Promise<void> {
+    await session.removeSource(sourceId)
+    if (session.state.sources.length === 0 && !standaloneCsv) setSource('site')
+  }
+
+  async function removeAllCsv(): Promise<void> {
+    invalidateCsvFlow()
+    await session.removeAll()
+    if (!standaloneCsv) setSource('site')
   }
 
   function options() {
@@ -414,10 +534,18 @@ export async function mountPlayerStats(
     }
   }
 
+  /** 只有快照内容变化时才重建分析，进度提示和按钮状态不触发重算。 */
+  function syncCsvSnapshot(): void {
+    if (source !== 'csv') return
+    if (session.state.snapshotVersion === appliedSnapshot) return
+    appliedSnapshot = session.state.snapshotVersion
+    state.videos = session.videos()
+    analysis.update(state.videos, { csv: true })
+  }
+
   function rebuild(): void {
     if (source === 'csv') {
-      state.videos = csvImports.flatMap((item) => item.videos)
-      analysis.update(state.videos, { csv: true })
+      syncCsvSnapshot()
       render()
       return
     }
@@ -436,36 +564,132 @@ export async function mountPlayerStats(
     render()
   }
 
-  function renderCsvFiles(): void {
-    csvFilesNote.classList.toggle('hidden', source !== 'csv' || csvImports.length === 0)
-    csvFilesNote.textContent =
-      source === 'csv'
-        ? csvImports
-            .map(
-              (item) =>
-                `${item.name}：${item.videos.length}/${item.total} 局${item.invalidRows > 0 ? `（${item.invalidRows} 行无效）` : ''}`,
-            )
-            .join(' · ')
-        : ''
+  function renderCsvList(): void {
+    csvList.replaceChildren()
+    const current = session.state
+    const nameCount = new Map<string, number>()
+    for (const record of current.sources) {
+      nameCount.set(record.name, (nameCount.get(record.name) ?? 0) + 1)
+    }
+    current.sources.forEach((record, index) => {
+      const item = el('li', 'csv-source')
+      const main = el('div', 'csv-source-main')
+      const duplicated = (nameCount.get(record.name) ?? 0) > 1
+      const label = duplicated ? `${record.name}（来源 ${index + 1}）` : record.name
+      main.append(el('span', 'csv-source-name', label))
+      const summary = session.sourceSummary(record.sourceId)
+      const loaded = current.loaded.has(record.sourceId)
+      main.append(
+        el(
+          'span',
+          'csv-source-meta',
+          summary
+            ? `${loaded ? '已读取' : '上次读取'} ${formatDateTime(summary.readAt)} · ${formatCount(summary.validCount)} 局 · ${formatCount(summary.invalidRows)} 行无效`
+            : '尚未读取',
+        ),
+      )
+      const delta = current.deltas.get(record.sourceId)
+      if (delta) {
+        main.append(el('span', 'csv-source-delta', formatValidDelta(delta.before, delta.after)))
+      }
+      if (current.needsPermission.includes(record.sourceId)) {
+        main.append(el('span', 'csv-source-flag', '需要授权'))
+      }
+      const actions = el('div', 'csv-source-actions')
+      if (current.needsPermission.includes(record.sourceId)) {
+        actions.append(
+          sourceButton('授权读取', `授权读取 ${label}`, current.loading, () =>
+            void session.grant(record.sourceId),
+          ),
+        )
+      }
+      actions.append(
+        sourceButton('重新关联', `重新关联 ${label}`, current.loading, () =>
+          void selectCsvFiles({
+            kind: 'relink', flow: invalidateCsvFlow(), sourceId: record.sourceId,
+          }),
+        ),
+        sourceButton('移除', `移除 ${label}`, current.loading, () =>
+          void removeCsvSource(record.sourceId),
+        ),
+      )
+      item.append(main, actions)
+      csvList.append(item)
+    })
   }
 
-  function renderCsvResult(message: string, errors: string[] = []): void {
-    csvFeedback.classList.toggle('hidden', message === '')
-    csvStatus.textContent = message
+  function sourceButton(
+    text: string,
+    title: string,
+    disabled: boolean,
+    onClick: () => void,
+  ): HTMLButtonElement {
+    const node = el('button', 'button small', text)
+    node.type = 'button'
+    node.title = title
+    node.disabled = disabled
+    node.addEventListener('click', onClick)
+    return node
+  }
+
+  function renderCsvFeedback(): void {
+    const current = session.state
+    csvFeedback.classList.toggle('hidden', current.message === '')
+    csvStatus.textContent = current.message
     csvErrorDetails.replaceChildren()
-    csvErrorDetails.classList.toggle('hidden', errors.length === 0)
-    if (errors.length === 0) return
-    csvErrorDetails.append(el('summary', undefined, `查看 ${errors.length} 项导入问题`))
+    csvErrorDetails.classList.toggle('hidden', current.errors.length === 0)
+    if (current.errors.length === 0) return
+    csvErrorDetails.append(
+      el('summary', undefined, `查看 ${current.errors.length} 项解析问题`),
+    )
     const list = el('ul')
-    for (const error of errors.slice(0, 50)) list.append(el('li', undefined, error))
+    for (const error of current.errors.slice(0, 50)) list.append(el('li', undefined, error))
     csvErrorDetails.append(list)
-    if (errors.length > 50) csvErrorDetails.append(el('p', undefined, '仅显示前 50 项问题'))
+    if (current.errors.length > 50) {
+      csvErrorDetails.append(el('p', undefined, '仅显示前 50 项问题'))
+    }
+  }
+
+  function renderCsv(): void {
+    const current = session.state
+    const csv = source === 'csv'
+    csvAddButton.disabled = current.loading
+    csvRefreshButton.disabled = current.loading || current.sources.length === 0
+    csvRefreshButton.classList.toggle('hidden', current.loading)
+    csvCancelButton.classList.toggle('hidden', !current.loading)
+    csvClearButton.disabled = current.sources.length === 0
+    csvEmptyButton.disabled = current.loading
+    csvEmptyCancelButton.classList.toggle('hidden', !current.loading)
+    csvEmptyNote.classList.toggle('hidden', !current.loading)
+    csvEmptyNote.textContent = '正在读取选中的文件…'
+    csvEmptyRemember.classList.toggle('hidden', persistentCsv)
+
+    if (current.loading && current.progress) {
+      csvPanelNote.textContent = `正在读取 ${current.progress.done}/${current.progress.total} 个文件…`
+    } else if (csv && current.sources.length > 0 && !session.hasSnapshot()) {
+      csvPanelNote.textContent = `已关联 ${current.sources.length} 个文件，点击「刷新」加载成绩。`
+    } else if (csv && session.hasSnapshot()) {
+      const last = Math.max(
+        0,
+        ...current.sources.map(
+          (record) => session.sourceSummary(record.sourceId)?.readAt ?? 0,
+        ),
+      )
+      csvPanelNote.textContent =
+        `已加载 ${current.sources.length} 个文件、${formatCount(session.loadedCount())} 局` +
+        (last > 0 ? ` · 上次读取 ${formatDateTime(last)}` : '')
+    } else {
+      csvPanelNote.textContent = ''
+    }
+
+    renderCsvList()
+    renderCsvFeedback()
   }
 
   function renderHeaderIdentity(): void {
     const csv = source === 'csv'
     nameNode.textContent = csv ? '本地 CSV' : siteName
-    idNode.textContent = csv ? `${csvImports.length} 个文件` : `ID ${siteUserId ?? ''}`
+    idNode.textContent = csv ? `${session.state.sources.length} 个文件` : `ID ${siteUserId ?? ''}`
     document.title = standaloneCsv
       ? '本地 CSV · 元神助手'
       : `${nameNode.textContent} · 玩家数据 · 元神助手`
@@ -478,12 +702,9 @@ export async function mountPlayerStats(
     csvSource.classList.toggle('active', csv)
     siteSource.classList.toggle('hidden', standaloneCsv)
     csvSource.classList.toggle('hidden', standaloneCsv)
-    const showCsvControls = !embedded && csv
-    importCsvButton.classList.toggle('hidden', !showCsvControls)
-    clearCsvButton.classList.toggle('hidden', !showCsvControls)
     softwareField.classList.toggle('hidden', csv)
     unapprovedLabel.classList.toggle('hidden', csv)
-    refreshButton.classList.toggle('hidden', standaloneCsv)
+    refreshButton.classList.toggle('hidden', standaloneCsv || csv)
     homeLink?.classList.toggle('hidden', embedded)
     selfButton?.classList.toggle('hidden', embedded)
   }
@@ -491,8 +712,12 @@ export async function mountPlayerStats(
   function setSource(next: 'site' | 'csv'): void {
     // 独立 CSV 启动固定本地数据源：即使内部误调用也不允许切回网站。
     if (standaloneCsv && next === 'site') return
+    // 切源会让「恢复清单 → 选择文件 → 读取」整条视图流程失效。
+    invalidateCsvFlow()
     if (source === next) {
       renderSourceUi()
+      renderHeaderIdentity()
+      renderCsv()
       renderPage()
       return
     }
@@ -505,11 +730,11 @@ export async function mountPlayerStats(
       pendingUnapproved = false
       previousController?.abort()
       state.loading = false
+      appliedSnapshot = -1
     }
     renderSourceUi()
     renderHeaderIdentity()
     state.message = ''
-    renderCsvFiles()
     // 网站记录为空时也重建，避免在等待请求期间残留 CSV。
     rebuild()
     if (!csv) {
@@ -518,92 +743,25 @@ export async function mountPlayerStats(
     }
   }
 
-  async function importCsvFiles(files: File[]): Promise<void> {
-    if (files.length === 0) return
-    // 后一次导入取代尚未提交的批次；已完成的批次继续保留。
-    const request = ++csvImportVersion
-    const current = (): boolean => request === csvImportVersion
-    const staged: CsvImport[] = []
-    let nextIdBase = csvIdBase
-    const errors: string[] = []
-    const fileErrors: string[] = []
-    csvImporting = true
-    renderCsvImporting()
-    try {
-      for (const file of files) {
-        if (file.size > 20 * 1024 * 1024) {
-          errors.push(`${file.name}：超过 20 MB`)
-          continue
-        }
-        try {
-          const text = await file.text()
-          if (!current()) return
-          const result = parseStatsCsv(text, nextIdBase)
-          for (const error of result.errors) {
-            errors.push(`${file.name} 第 ${error.line} 行：${error.message}`)
-          }
-          if (result.videos.length === 0) {
-            errors.push(`${file.name}：没有有效数据`)
-            continue
-          }
-          nextIdBase += result.videos.length
-          staged.push({
-            name: file.name,
-            total: result.total,
-            videos: result.videos,
-            invalidRows: result.errors.length,
-          })
-        } catch (error) {
-          if (!current()) return
-          const message = `${file.name}：${errorMessage(error)}`
-          errors.push(message)
-          fileErrors.push(message)
-        }
-      }
-      if (!current()) return
-      // 整批读取完成且仍有效后再提交，清除操作不会留下半批记录。
-      const importedGames = nextIdBase - csvIdBase
-      csvIdBase = nextIdBase
-      csvImports.push(...staged)
-      renderCsvResult(
-        `本次导入：成功 ${staged.length} 个文件、${formatCount(importedGames)} 局；失败 ${files.length - staged.length} 个文件` +
-          (errors.length > 0 ? `；${errors.length} 项问题` : '') +
-          (fileErrors.length > 0 ? `。${fileErrors.slice(0, 3).join('；')}` : ''),
-        errors,
-      )
-      if (staged.length === 0) return
-      if (source !== 'csv') {
-        // 普通玩家页导入后切到 CSV 数据源；setSource 会一并刷新标题、文件清单和视图。
-        setSource('csv')
-        return
-      }
-      renderHeaderIdentity()
-      renderCsvFiles()
-      rebuild()
-    } finally {
-      // 只有最新批次负责恢复状态；被取代或清除的旧批次不能改页面。
-      if (request === csvImportVersion) {
-        csvImporting = false
-        renderCsvImporting()
-      }
-    }
-  }
-
   function render(): void {
     const current = options()
     const counted = state.videos.filter((video) => eligible(video, current)).length
-    if (standaloneCsv && source === 'csv' && csvImports.length === 0) {
+    if (standaloneCsv && source === 'csv' && session.state.sources.length === 0) {
       metaNode.textContent = '选择 CSV 文件开始本地分析'
+    } else if (source === 'csv') {
+      const records = session.state.sources
+      const parts = session.hasSnapshot()
+        ? [
+            `CSV ${records.length} 个文件`,
+            `录像 ${formatCount(state.videos.length)}`,
+            `计入 ${formatCount(counted)}`,
+          ]
+        : [`已关联 ${records.length} 个文件`, '尚未加载成绩']
+      metaNode.textContent = parts.join(' · ')
     } else {
-      const parts =
-        source === 'csv'
-          ? [`CSV ${csvImports.length} 个文件`, `录像 ${formatCount(state.videos.length)}`]
-          : [`录像 ${formatCount(state.rows.length)}`]
-      parts.push(`计入 ${formatCount(counted)}`)
-      if (source === 'site') {
-        parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
-        if (state.fromCache) parts.push('（缓存）')
-      }
+      const parts = [`录像 ${formatCount(state.rows.length)}`, `计入 ${formatCount(counted)}`]
+      parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
+      if (state.fromCache) parts.push('（缓存）')
       metaNode.textContent = parts.join(' · ')
     }
 
@@ -625,6 +783,7 @@ export async function mountPlayerStats(
 
     renderPb(current)
     renderTop(current)
+    renderCsv()
     renderPage()
   }
 
@@ -932,6 +1091,16 @@ export async function mountPlayerStats(
     }, 1_000)
   })
 
+  // 独立 CSV 先恢复关联清单（只读数据库，不读文件、不请求授权），再摆控件。
+  if (standaloneCsv) await session.restore()
+
+  const checkRegistryOnFocus = (): void => {
+    if (source === 'csv' && session.state.ready) void session.checkRegistry()
+  }
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('focus', checkRegistryOnFocus)
+  }
+
   // 先按启动模式摆好控件与空态，再决定是否发起网站请求。
   setSource(launch.kind === 'csv' ? 'csv' : 'site')
   renderHeaderIdentity()
@@ -964,9 +1133,14 @@ export async function mountPlayerStats(
   return {
     destroy(): void {
       requestVersion += 1
-      csvImportVersion += 1
       controller?.abort()
       controller = null
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('focus', checkRegistryOnFocus)
+      }
+      offDbBlocked()
+      invalidateCsvFlow()
+      session.destroy()
       analysis.destroy()
     },
   }

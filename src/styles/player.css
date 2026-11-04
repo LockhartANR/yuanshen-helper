@@ -1369,6 +1369,112 @@ body {
   line-height: 1.6;
 }
 
+/* ---- 本地 CSV 关联清单 ---- */
+
+.csv-sources {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.csv-sources-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.csv-sources-head .card-title {
+  margin: 0;
+}
+
+.csv-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.csv-sources-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.csv-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.csv-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.csv-source-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.csv-source-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.csv-source-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.csv-source-delta {
+  color: var(--accent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.csv-source-flag {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.button.small {
+  min-height: 26px;
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .csv-sources {
+    padding: 12px;
+  }
+
+  .csv-source {
+    align-items: flex-start;
+  }
+
+  .csv-source-actions {
+    width: 100%;
+  }
+}
+
 /* ---- 站内嵌入（iframe 内） ---- */
 
 .player-page-embedded {
