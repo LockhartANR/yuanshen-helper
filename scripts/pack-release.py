@@ -1,5 +1,6 @@
-"""把 dist/ 打成 Chrome 可直接加载的 zip（manifest.json 在根目录，条目用 / 分隔）。"""
+"""打包 Chrome 扩展并生成同名 .zip.sha256 校验文件。"""
 
+import hashlib
 import os
 import sys
 import zipfile
@@ -17,7 +18,13 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive
             rel = os.path.relpath(path, src).replace(os.sep, "/")
             archive.write(path, rel)
 
+with open(out, "rb") as package:
+    digest = hashlib.sha256(package.read()).hexdigest()
+with open(out + ".sha256", "w", encoding="utf-8", newline="\n") as checksum:
+    checksum.write(f"{digest}  {os.path.basename(out)}\n")
+
 with zipfile.ZipFile(out) as archive:
     names = archive.namelist()
     print("entries:", len(names), "size:", os.path.getsize(out))
     print("\n".join(sorted(names)))
+print("SHA-256:", digest)

@@ -31,6 +31,8 @@
 
 下载 `yuanshen-helper-<version>.zip`，解压后按下方安装步骤加载。也可以从源码构建（见「方式二」）。
 
+发布页附有安装包的 SHA-256 值和 `.zip.sha256` 校验文件。Windows 可用 `Get-FileHash .\yuanshen-helper-<version>.zip -Algorithm SHA256` 核对下载文件。
+
 ## 安装
 
 ### 方式一：Release 包
@@ -210,7 +212,7 @@ npm ci
 npm run typecheck   # TypeScript 类型检查
 npm test            # 单元 / 集成测试
 npm run build       # 产物输出到 dist/
-python scripts/pack-release.py dist release/yuanshen-helper-<version>.zip  # 发布包，zip 内用 / 分隔
+python scripts/pack-release.py dist release/yuanshen-helper-<version>.zip  # 发布包与 .zip.sha256，zip 内用 / 分隔
 npm run watch       # 持续构建；改完在 chrome://extensions 重新加载
 npm run verify:player -- 16   # 用站点接口对拍某个用户的 PB / 前端成绩
 ```
