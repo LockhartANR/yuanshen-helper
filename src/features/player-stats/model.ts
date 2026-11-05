@@ -85,6 +85,20 @@ export function compareVideoOrder(a: Video, b: Video): number {
   return a.id - b.id
 }
 
+/**
+ * 一次数据更新的不可变描述。
+ * 网站玩家 ID 与 CSV 快照通过 source / identity 区分；只有录像内容变化才增加 contentVersion，
+ * 加载进度和提示变化不应重建统计。
+ */
+export interface DatasetSnapshot {
+  source: 'site' | 'csv'
+  /** 来源身份：网站玩家或 CSV 清单的稳定标识。 */
+  identity: string
+  /** 内容版本：同一来源的录像内容变化时递增。 */
+  contentVersion: number
+  videos: Video[]
+}
+
 export interface AnalyzeOptions {
   /** `'all'` 或 `a` / `e` / `m` / `r`；只作用于 PB 表，前端成绩不吃这个筛选。 */
   software?: string

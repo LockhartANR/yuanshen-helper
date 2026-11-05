@@ -1,19 +1,7 @@
 import { formatDateInput, RANGE_OPTIONS } from '../analysis-range'
 import type { CustomRange, RangeKey } from '../analysis-range'
+import type { RangeControlOwner } from '../analysis-state'
 import { escapeHtml } from '../../../shared/ui'
-
-export type RangeControlOwner = 'global' | 'lsf'
-
-/** 两个入口共用：已应用的时段 + 正在编辑的草稿状态。 */
-export interface RangeControlState {
-  uiKey: RangeKey
-  panel: RangeControlOwner | null
-  draft: CustomRange
-  error: string
-  now: number
-  /** 已应用的是自定义范围时显示「编辑日期」，可直接重新打开面板。 */
-  editable?: boolean
-}
 
 export function rangeSelectHtml(
   owner: RangeControlOwner,

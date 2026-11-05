@@ -253,6 +253,23 @@ describe('时段编辑切页', () => {
     expect(findClass('range-panel-row').innerHTML).toContain('data-range-panel="global"')
     expect(findClass('range-select-slot').innerHTML).toContain('value="custom" selected')
   })
+
+  it('连续修改起止日期后切页，草稿两端都保留', () => {
+    pick('custom', 'global')
+    const start = new TestElement('input')
+    start.dataset.rangeDate = 'start'
+    start.value = '2026-11-01'
+    root.emit('input', start)
+    const end = new TestElement('input')
+    end.dataset.rangeDate = 'end'
+    end.value = '2026-11-02'
+    root.emit('input', end)
+
+    nav('rank')
+    const html = findClass('range-panel-row').innerHTML
+    expect(html).toContain('value="2026-11-01"')
+    expect(html).toContain('value="2026-11-02"')
+  })
 })
 
 describe('全局与历史共用有效日期', () => {
@@ -332,7 +349,7 @@ describe('周 T37 复制', () => {
     view.update([
       video({ id: 1, end_time: LAST_WEEK }),
       video({ id: 2, end_time: CURRENT_WEEK }),
-    ])
+    ], { csv: false, identity: 'player-16' })
   }
 
   it('每个有成绩周都有带完整日期的复制按钮，明细列跨度正确', () => {

@@ -14,9 +14,8 @@ import { LEVEL_LABELS } from '../model'
 import type { Video } from '../model'
 import type { LsfMetric } from '../ratings'
 import { rangePanelHtml, rangeSelectHtml } from './range-control'
-import type { RangeControlState } from './range-control'
+import type { RangeControlState } from '../analysis-state'
 
-export const LSF_LEDGER_STEP = 100
 /** 阶梯图上最多标出多少个可交互台阶点；超出时按等距抽样，台阶线仍保留全部变化。 */
 const LSF_CHART_DOTS = 1200
 

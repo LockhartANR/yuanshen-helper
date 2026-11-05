@@ -259,8 +259,11 @@ src/
 │       ├── analysis.ts           # 赛博大表的指标与聚合（纯函数）
 │       ├── analysis-range.ts     # 共用时段选项、自定义日期与本地日历边界
 │       ├── analysis-settings.ts  # 榜单 / 权重 / T37 / 3BV / 色板 / 锚点参数
+│       ├── analysis-state.ts     # 筛选、日期草稿、页签与快照类型
+│       ├── analysis-controller.ts # 状态操作、参数保存与锚点异步编排
+│       ├── analysis-data.ts      # 各统计数据集、梁山分派生与缓存
 │       ├── gc-coefficients.ts    # GC 战力系数（从工作簿提取）
-│       ├── analysis-view.ts      # 赛博大表状态与页签装配
+│       ├── analysis-view.ts      # 工具栏、页签渲染与交互接线
 │       ├── ui/                   # 定阶 / 梁山分展示、时段 / 参数控件与编辑定位
 │       ├── api.ts                # 录像列表 / 明细分批请求、限流退避
 │       ├── colors.ts             # 原表色板与取色

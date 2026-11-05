@@ -4,8 +4,6 @@ import { el, escapeHtml } from '../../shared/ui'
 import {
   activeDays,
   activityCalendar,
-  analyzeGames,
-  applyBvFloors,
   bucketStats,
   dogPredictions,
   efficiencyTop,
@@ -23,26 +21,13 @@ import {
   subStats,
   summarize,
   todayCopyText,
-  todayStats,
   weekStats,
   yearStats,
 } from './analysis'
 import { configureColors, dateColorStyle, medianOf, numColorStyle, pbColorStyle } from './colors'
-import {
-  DEFAULT_ANALYSIS_SETTINGS,
-  loadAnalysisSettings,
-  parseDogTargets,
-  saveAnalysisSettings,
-} from './analysis-settings'
-import {
-  customDraftFor,
-  inDateRange,
-  rangeSignature,
-  resolveRange,
-  startOfLocalDay,
-  validateCustomRange,
-} from './analysis-range'
-import type { CustomRange, DateRange, RangeKey } from './analysis-range'
+import { parseDogTargets } from './analysis-settings'
+import { startOfLocalDay } from './analysis-range'
+import type { DateRange, RangeKey } from './analysis-range'
 import type {
   AnalysisGame,
   EfficiencyMetric,
@@ -51,10 +36,7 @@ import type {
   PeriodMode,
   YearStat,
 } from './analysis'
-import { fetchLsfAnchors } from './lsf-anchors'
-import { WORKBOOK_ANCHORS } from './ratings'
-import type { LsfEvent, LsfHistory } from './lsf-history'
-import { buildLsfHistory, lsfRange } from './lsf-history'
+import type { LsfEvent } from './lsf-history'
 import { LEVEL_LABELS, LEVELS, STNB_COEFFICIENT } from './model'
 import type { Level, Video } from './model'
 import { ratingSnapshot } from './ratings'
@@ -66,16 +48,21 @@ import {
   formatCopyWeek,
   formatWeekDelta,
   monthCopyText,
-  normalizeMonthCopyFields,
-  normalizeYearCopyFields,
   weekCopyText,
   weekCopyEntries,
   weekDeltaClass,
   yearCopyText,
 } from './trend-copy'
+import { createAnalysisController } from './analysis-controller'
+import { lsfViewData } from './analysis-data'
+import type {
+  AnalysisSettingsPatch,
+  AnalysisSnapshot,
+  AnalysisTab,
+  RankStat,
+} from './analysis-state'
 import { createEditorFocus } from './ui/editor-focus'
 import {
-  LSF_LEDGER_STEP,
   lsfChartHtml,
   lsfDetailBody,
   lsfLedgerHtml,
@@ -83,17 +70,12 @@ import {
   lsfStatsHtml,
 } from './ui/lsf-view'
 import { rangePanelHtml, rangeSelectHtml } from './ui/range-control'
-import type { RangeControlOwner, RangeControlState } from './ui/range-control'
 import { ratingOverviewHtml } from './ui/rating-view'
 import { authorHomeLink, createSettingsPanel } from './ui/settings-panel'
 
 const STAT_LABELS = { time: '用时', bvs: '3BVS', stnb: 'STNB' } as const
 
-type NavKey = 'overview' | 'lsf' | 'rank' | 'trend' | 'period' | 'dist' | 'eff' | 'map'
-type RankStat = keyof typeof STAT_LABELS
-type RankLayout = 'single' | 'triple'
-
-const NAV_ITEMS: Array<[NavKey, string]> = [
+const NAV_ITEMS: Array<[AnalysisTab, string]> = [
   ['overview', '概览'],
   ['lsf', '梁山分'],
   ['rank', '榜单'],
@@ -166,12 +148,6 @@ function videoLink(game: AnalysisGame, text: string, className = ''): string {
   return linkToVideo(game.video, text, className)
 }
 
-interface RangeEditor {
-  owner: RangeControlOwner
-  draft: CustomRange
-  error: string
-}
-
 function rowClass(index: number): string {
   if (index === 0) return ' class="top1"'
   if (index < 3) return ' class="top3"'
@@ -220,53 +196,36 @@ export interface AnalysisViewOptions {
   autoSiteAnchors?: boolean
 }
 
+/** 大表数据更新参数：数据源与来源身份。 */
+export interface AnalysisUpdateOptions {
+  csv?: boolean
+  /** 网站玩家或 CSV 快照的稳定身份；缺省按数据源占位。 */
+  identity?: string
+}
+
 export interface AnalysisView {
   root: HTMLElement
-  update(videos: Video[], options?: { csv?: boolean }): void
+  update(videos: Video[], options?: AnalysisUpdateOptions): void
   /** 销毁视图：使进行中的锚点请求失效并移除节点。 */
   destroy(): void
 }
 
 export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisView {
-  const state = {
-    nav: 'overview' as NavKey,
-    /** 已应用的时段（全局筛选与梁山分共用）。 */
-    range: { key: 'all' as RangeKey, custom: { start: '', end: '' } as CustomRange },
-    /** 编辑面板与草稿；关闭时只保留已应用时段中的上次有效日期。 */
-    rangeEditor: null as RangeEditor | null,
-    software: 'all',
-    rankStat: 'time' as RankStat,
-    rankLevel: 'b' as Level,
-    rankLayout: 'single' as RankLayout,
-    nfOnly: false,
-    trendLevel: 'e' as Level,
-    hideEmptyMonths: false,
-    distLevel: 'b' as Level,
-    effLevel: 'b' as Level,
-    periodMode: 'month' as PeriodMode,
-    periodLevel: 'e' as Level,
-    periodStat: 'time' as RankStat,
-    periodKey: '',
-    mapLevel: 'e' as Level,
-    monthCopyOpen: false,
-    yearCopyOpen: { b: false, i: false, e: false } as Record<Level, boolean>,
-    /** 梁山分流水展开状态、显示条数与图表定位目标；只留在本次视图会话。 */
-    lsfExpanded: new Set<string>(),
-    lsfLimit: LSF_LEDGER_STEP,
-    lsfFocus: '',
-    /** 单日最大涨分定位后高亮该日已显示的流水。 */
-    lsfFocusDay: null as number | null,
-  }
-
-  let videos: Video[] = []
-  let games: AnalysisGame[] = []
-  let rangeGames: AnalysisGame[] = []
-  let ratingGames: AnalysisGame[] = []
-  let todaySnapshot: ReturnType<typeof todayStats> = []
-  /** 录像集版本号：换数据源 / 玩家后让梁山分缓存失效。 */
-  let videosToken = 0
-  /** 梁山分历史缓存：一次数据或计分参数变化才重建，切页 / 展开 / 截取时段复用。 */
-  let lsfCache: { key: string; history: LsfHistory } | null = null
+  const controller = createAnalysisController({
+    autoSiteAnchors: options.autoSiteAnchors,
+  })
+  let snapshot = controller.getSnapshot()
+  let state = snapshot.tab
+  let filterState = snapshot.filters
+  let settings = snapshot.settings
+  let games = snapshot.data.games
+  let rangeGames = snapshot.data.rangeGames
+  let ratingGames = snapshot.data.ratingGames
+  let todaySnapshot = snapshot.data.today
+  let csvMode = snapshot.dataset.source === 'csv'
+  let now = snapshot.dataNow
+  let bounds = snapshot.bounds
+  let clock = snapshot.clock
   /** 本次渲染的倒序流水，供展开与卡片定位回查。 */
   let lsfEvents: LsfEvent[] = []
   /** 本次渲染的月 / 年统计结果，供复制按钮和预览回查，点击时不再聚合。 */
@@ -275,14 +234,10 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   let trendYears: Record<Level, YearStat[]> = { b: [], i: [], e: [] }
   /** 本次渲染的周复制文本，包含已确定的 Δ 和筛选范围，以周起点回查。 */
   const trendWeekCopies = new Map<number, string>()
-  let now = Date.now()
-  const settings = loadAnalysisSettings()
   configureColors(settings.colorThresholds)
-  let anchorError = false
-  let anchorRequest = 0
-  let csvMode = false
-  /** 上一次全局筛选使用的日期边界签名，用于跨午夜等边界变化时同步重筛。 */
-  let appliedRangeSignature = ''
+  /** 只在快照修订变化时同步参数面板与色板，避免每次重绘覆盖输入。 */
+  let settingsRevisionSeen = snapshot.settingsRevision
+  let anchorRevisionSeen = snapshot.anchors.revision
   const floorLabel = (): string =>
     `${settings.bvFloors.b}/${settings.bvFloors.i}/${settings.bvFloors.e}`
 
@@ -309,82 +264,43 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   const nfInput = el('input')
   nfInput.type = 'checkbox'
   nfInput.id = 'analysis-nf-global'
-  nfInput.checked = state.nfOnly
+  nfInput.checked = filterState.nfOnly
   nfField.append(nfInput, document.createTextNode(' 只看 NF'))
   const settingsButton = el('button', 'button', '参数')
   settingsButton.type = 'button'
   filters.append(rangeField, softwareField, nfField, countNote, floorNote, settingsButton)
 
   const settingsPanel = createSettingsPanel({
-    getSettings: () => settings,
+    getSettings: () => controller.getSettings(),
     handlers: {
       onBasicChange(key, value) {
-        settings[key] = value
-        saveAnalysisSettings(settings)
-        render()
+        controller.updateSettings({ [key]: value } as AnalysisSettingsPatch)
       },
       onAnchorChange(key, value) {
-        settings.anchors[key] = value
-        settings.anchorMode = 'workbook'
-        anchorRequest += 1
-        anchorError = false
-        saveAnalysisSettings(settings)
-        render()
+        controller.updateSettings({ anchors: { [key]: value }, anchorMode: 'workbook' })
       },
       onUseWorkbook() {
-        anchorRequest += 1
-        Object.assign(settings.anchors, WORKBOOK_ANCHORS)
-        settings.anchorMode = 'workbook'
-        anchorError = false
-        settingsPanel.refreshAnchors()
-        settingsPanel.setAnchorStatus('已使用大表锚点')
-        saveAnalysisSettings(settings)
-        render()
+        controller.useWorkbookAnchors()
       },
       onUseSite() {
-        void loadSiteAnchors(true).then((ok) => {
-          if (!ok) return
-          settings.anchorMode = 'site'
-          saveAnalysisSettings(settings)
-          render()
-        })
+        void controller.refreshSiteAnchors(true)
       },
       onWeightChange(level, metric, value) {
-        settings.softWeights[level][metric] = value
-        saveAnalysisSettings(settings)
-        render()
+        controller.updateSettings({ softWeights: { [level]: { [metric]: value } } })
       },
       onScoreFieldChange(field, level, value) {
-        settings[field][level] = value
-        saveAnalysisSettings(settings)
-        if (field === 'bvFloors') applyFilters()
-        render()
+        controller.updateSettings({ [field]: { [level]: value } } as AnalysisSettingsPatch)
       },
       onColorThresholdsChange(values) {
-        settings.colorThresholds = values
-        configureColors(values)
-        saveAnalysisSettings(settings)
-        render()
+        controller.updateSettings({ colorThresholds: values })
       },
       onDogTargetsChange(level, value) {
-        if (level === 'e') settings.dogTargetsE = value
-        else settings.dogTargetsI = value
-        saveAnalysisSettings(settings)
-        render()
+        controller.updateSettings(
+          level === 'e' ? { dogTargetsE: value } : { dogTargetsI: value },
+        )
       },
       onReset() {
-        anchorRequest += 1
-        Object.assign(
-          settings,
-          JSON.parse(JSON.stringify(DEFAULT_ANALYSIS_SETTINGS)) as typeof settings,
-        )
-        configureColors(settings.colorThresholds)
-        settingsPanel.refresh()
-        settingsPanel.setAnchorStatus('已使用大表锚点')
-        anchorError = false
-        applyFilters()
-        saveAnalysisSettings(settings)
-        render()
+        controller.resetSettings()
       },
     },
   })
@@ -399,7 +315,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   })
 
   const nav = el('nav', 'analysis-nav')
-  const navButtons = new Map<NavKey, HTMLButtonElement>()
+  const navButtons = new Map<AnalysisTab, HTMLButtonElement>()
   for (const [key, label] of NAV_ITEMS) {
     const button = el('button', 'analysis-tab', label)
     button.type = 'button'
@@ -536,11 +452,11 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     const open = !panel.classList.contains('hidden')
     button.setAttribute('aria-expanded', String(open))
     if (scope === 'month') {
-      state.monthCopyOpen = open
+      controller.setCopyPanel('month', open)
       return
     }
     const level = panel.dataset.level as Level | undefined
-    if (level) state.yearCopyOpen[level] = open
+    controller.setCopyPanel('year', open, level)
   }
 
   /**
@@ -548,9 +464,8 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
    * 不走整页重绘，展开状态和键盘焦点自然保留。
    */
   function setCopyFields(scope: CopySettingsScope, fields: unknown): void {
-    if (scope === 'month') settings.monthCopyFields = normalizeMonthCopyFields(fields)
-    else settings.yearCopyFields = normalizeYearCopyFields(fields)
-    saveAnalysisSettings(settings)
+    controller.setCopyFields(scope, fields)
+    settings = controller.getSettings()
     const selected: readonly string[] =
       scope === 'month' ? settings.monthCopyFields : settings.yearCopyFields
     for (const input of viewHost.querySelectorAll<HTMLInputElement>(
@@ -586,56 +501,36 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     root,
     toolbar,
     isEditing: () =>
-      state.rangeEditor !== null || !settingsPanel.root.classList.contains('hidden'),
+      snapshot.rangeEditor !== null || !settingsPanel.root.classList.contains('hidden'),
   })
 
-  function applyFilters(bounds: DateRange = currentBounds(Date.now())): void {
-    const filtered = analyzeGames(
-      videos,
-      { software: csvMode ? 'all' : state.software, nfOnly: state.nfOnly },
-      1,
-    )
-    // 全局筛选与梁山分共用同一份时段；「全部」不设日期边界。
-    games = applyBvFloors(filtered, settings.bvFloors).filter((game) =>
-      inDateRange(game.date, bounds),
-    )
-    // 月年局数与 rAvg 保留 2–9，但不再套用各级 3BV 下限。
-    rangeGames = filtered.filter(
-      (game) => game.bv >= 2 && inDateRange(game.date, bounds),
-    )
-    appliedRangeSignature = rangeSignature(bounds)
-    updateCountNote()
+  /** 控制器快照到位后同步只读镜像、参数面板与色板；输入框只在设置修订变化时回填。 */
+  function applySnapshot(next: AnalysisSnapshot): void {
+    snapshot = next
+    state = next.tab
+    filterState = next.filters
+    settings = next.settings
+    games = next.data.games
+    rangeGames = next.data.rangeGames
+    ratingGames = next.data.ratingGames
+    todaySnapshot = next.data.today
+    csvMode = next.dataset.source === 'csv'
+    now = next.dataNow
+    bounds = next.bounds
+    clock = next.clock
+    if (next.settingsRevision !== settingsRevisionSeen) {
+      settingsRevisionSeen = next.settingsRevision
+      configureColors(next.settings.colorThresholds)
+      settingsPanel.refresh()
+    }
+    if (next.anchors.revision !== anchorRevisionSeen) {
+      anchorRevisionSeen = next.anchors.revision
+      settingsPanel.refreshAnchors()
+    }
+    settingsPanel.setAnchorStatus(next.anchors.status)
   }
 
-  /**
-   * 梁山分历史：只有录像集或计分参数（锚点、权重、3BV 下限）变化才重建。
-   * 用缓存键而不是手工失效，避免切页、展开、缩小范围时重复重建。
-   */
-  function lsfHistory(): LsfHistory {
-    const key = [
-      videosToken,
-      now,
-      JSON.stringify(settings.anchors),
-      JSON.stringify(settings.softWeights),
-      JSON.stringify(settings.levelWeights),
-      JSON.stringify(settings.bvFloors),
-    ].join('|')
-    if (lsfCache !== null && lsfCache.key === key) return lsfCache.history
-    const history = buildLsfHistory(ratingGames, {
-      anchors: settings.anchors,
-      softWeights: settings.softWeights,
-      levelWeights: settings.levelWeights,
-      floors: settings.bvFloors,
-      now,
-    })
-    lsfCache = { key, history }
-    return history
-  }
-
-  /** 已应用时段的解析结果；快捷项每次重新按当前时钟解析，跨午夜不会停留在旧日期。 */
-  function currentBounds(clock: number): DateRange {
-    return resolveRange(state.range.key, state.range.custom, clock)
-  }
+  const unsubscribe = controller.subscribe(render)
 
   /** 计入局数与筛选提示：梁山分有自己的口径，不沿用其他页签筛选后的计数。 */
   function updateCountNote(): void {
@@ -644,10 +539,10 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     if (state.nav === 'lsf') {
       countNote.title = '全时段有效记录用于梁山分定阶，日期仅截取历史分析时段。'
       countNote.textContent =
-        `全时段有效记录 ${formatCount(lsfHistory().includedCount)} 局 · 不受软件 / 只看 NF 筛选 · 日期用于历史分析`
+        `全时段有效记录 ${formatCount(snapshot.data.history.includedCount)} 局 · 不受软件 / 只看 NF 筛选 · 日期用于历史分析`
       return
     }
-    countNote.textContent = `统计样本 ${formatCount(games.length)} 局${state.nfOnly ? ' · NF' : ''}`
+    countNote.textContent = `统计样本 ${formatCount(games.length)} 局${filterState.nfOnly ? ' · NF' : ''}`
     countNote.title = '应用公共筛选及各级 3BV 下限；今日成绩、月年局数和全时段定阶使用各自口径。'
   }
 
@@ -661,6 +556,8 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     nfInput.disabled = lsfTab
     softwareSelect.title = lsfTab ? '梁山分使用全时段记录，不受软件筛选' : ''
     nfInput.title = lsfTab ? '梁山分始终同时统计 NF 与非 NF 记录，不单独筛选' : ''
+    softwareField.classList.toggle('hidden', csvMode)
+    softwareSelect.value = csvMode ? 'all' : filterState.software
     updateCountNote()
   }
 
@@ -671,21 +568,9 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
   }
 
-  function rangeControls(clock: number): RangeControlState {
-    const editor = state.rangeEditor
-    return {
-      uiKey: editor ? 'custom' : state.range.key,
-      panel: editor?.owner ?? null,
-      draft: editor?.draft ?? state.range.custom,
-      error: editor?.error ?? '',
-      now: clock,
-      editable: state.range.key === 'custom',
-    }
-  }
-
   /** 顶部筛选条与页内控件从同一份已应用时段和编辑草稿派生。 */
-  function renderRangeControls(clock: number): void {
-    const controls = rangeControls(clock)
+  function renderRangeControls(): void {
+    const controls = snapshot.rangeControl
     rangeSelectSlot.innerHTML = rangeSelectHtml(
       'global',
       controls.uiKey,
@@ -694,7 +579,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     const showPanel = controls.panel === 'global'
     rangePanel.classList.toggle('hidden', !showPanel)
     rangePanel.innerHTML = showPanel
-      ? rangePanelHtml('global', controls.draft, controls.error, clock)
+      ? rangePanelHtml('global', controls.draft, controls.error, controls.now)
       : ''
   }
 
@@ -710,32 +595,22 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
   }
 
-  /** 切换时段后，旧的定位与单日高亮不再指向当前流水。 */
-  function clearLsfFocus(): void {
-    state.lsfFocus = ''
-    state.lsfFocusDay = null
-  }
-
   /** 选择快捷时段立即应用；选择「自定义」先进入草稿，应用前不改已应用范围。 */
   function pickRange(key: RangeKey, owner: 'global' | 'lsf'): void {
     if (key === 'custom') {
-      state.rangeEditor = { owner, draft: customDraftFor(state.range.custom, Date.now()), error: '' }
-      render()
+      controller.beginRangeEdit(owner)
       focusRangeControl(owner, 'start')
       return
     }
-    state.range = { key, custom: state.range.custom }
-    state.rangeEditor = null
-    clearLsfFocus()
-    applyFilters()
-    render()
+    controller.selectRangeKey(key, owner)
     focusRangeControl(owner)
   }
 
   function syncRangeDraft(input: HTMLInputElement): void {
     const field = input.dataset.rangeDate
-    if (state.rangeEditor && (field === 'start' || field === 'end')) {
-      state.rangeEditor.draft = { ...state.rangeEditor.draft, [field]: input.value }
+    if (field === 'start' || field === 'end') {
+      // 只提交本次改动字段，由控制器与当前草稿合并；输入期间不重绘。
+      controller.setRangeDraft({ [field]: input.value })
     }
   }
 
@@ -744,37 +619,21 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     const owner = panel.getAttribute('data-range-panel') === 'lsf' ? 'lsf' : 'global'
     const start = panel.querySelector<HTMLInputElement>('input[data-range-date="start"]')
     const end = panel.querySelector<HTMLInputElement>('input[data-range-date="end"]')
-    const draft: CustomRange = { start: start?.value ?? '', end: end?.value ?? '' }
-    const check = validateCustomRange(draft, Date.now())
-    if (!check.ok) {
-      state.rangeEditor = { owner, draft, error: check.message }
-      render()
-      focusRangeControl(owner, 'start')
-      return
-    }
-    state.range = { key: 'custom', custom: draft }
-    state.rangeEditor = null
-    clearLsfFocus()
-    applyFilters()
-    render()
-    focusRangeControl(owner)
+    controller.setRangeDraft({ start: start?.value ?? '', end: end?.value ?? '' })
+    const check = controller.applyRange()
+    focusRangeControl(owner, check.ok ? 'select' : 'start')
   }
 
   function cancelCustomRange(): void {
-    const owner = state.rangeEditor?.owner ?? 'global'
-    state.rangeEditor = null
-    render()
+    const owner = snapshot.rangeEditor?.owner ?? 'global'
+    controller.cancelRangeEdit()
     focusRangeControl(owner)
   }
 
-  function render(): void {
-    const clock = Date.now()
-    const bounds = currentBounds(clock)
-    // 跨午夜后快捷时段的边界会变（今天 / 本月 / 近7天…）：先同步全局筛选，再渲染；
-    // 梁山分与全局筛选因此始终基于同一组日期边界，历史缓存照常复用。
-    if (rangeSignature(bounds) !== appliedRangeSignature) applyFilters(bounds)
+  function render(next: AnalysisSnapshot = controller.getSnapshot()): void {
+    applySnapshot(next)
     renderNav()
-    renderRangeControls(clock)
+    renderRangeControls()
     updateFilterAvailability()
     editorFocus.updateToolbar()
     if (state.nav === 'overview') {
@@ -798,18 +657,15 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
   /** 梁山分页签：定阶总览（全时段快照）+ 时段统计 + 阶梯图 + 变动流水。 */
   function lsfHtml(bounds: DateRange, clock: number): string {
-    const history = lsfHistory()
-    const range = lsfRange(history, {
-      start: bounds.start,
-      endExclusive: bounds.endExclusive,
-      now: clock,
-    })
-    const controls = rangeControls(clock)
+    const history = snapshot.data.history
+    const { range, events } = lsfViewData(history, bounds, clock)
+    lsfEvents = events
     const summary =
-      ratingOverviewHtml(history.snapshot, { anchorMode: settings.anchorMode, anchorError }) +
-      lsfStatsHtml(range, bounds, controls)
+      ratingOverviewHtml(history.snapshot, {
+        anchorMode: settings.anchorMode,
+        anchorError: snapshot.anchors.error,
+      }) + lsfStatsHtml(range, bounds, snapshot.rangeControl)
     if (history.includedCount === 0) {
-      lsfEvents = []
       return (
         summary +
         '<div class="card"><div class="card-body"><p class="muted">' +
@@ -818,9 +674,6 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
         lsfNoticeHtml(history, range)
       )
     }
-    const undated = bounds.start === null ? history.events.filter((event) => event.undated) : []
-    const events = [...range.events].reverse().concat([...undated].reverse())
-    lsfEvents = events
     return (
       summary +
       lsfChartHtml(range) +
@@ -857,24 +710,13 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
   function toggleLsfDetail(id: string): void {
     if (!id) return
-    const open = !state.lsfExpanded.has(id)
-    if (open) state.lsfExpanded.add(id)
-    else state.lsfExpanded.delete(id)
+    const open = controller.toggleLsfDetail(id)
     expandLsfDetail(id, open)
   }
 
   /** 点击或键盘激活台阶点：必要时扩大流水显示范围，再滚动定位并展开明细。 */
   function focusLsfEvent(id: string, day: number | null = null): void {
-    if (!id) return
-    const index = lsfEvents.findIndex((event) => event.id === id)
-    if (index < 0) return
-    state.lsfFocus = id
-    state.lsfFocusDay = day
-    state.lsfExpanded.add(id)
-    if (index >= state.lsfLimit) {
-      state.lsfLimit = Math.ceil((index + 1) / LSF_LEDGER_STEP) * LSF_LEDGER_STEP
-    }
-    render()
+    if (!controller.focusLsfEvent(id, day)) return
     // 重绘会替换掉刚被激活的台阶点，把焦点交给对应流水的展开按钮，键盘操作可以继续。
     const button = viewHost.querySelector<HTMLButtonElement>(`[data-lsf-toggle="${id}"]`)
     if (button) button.focus()
@@ -914,8 +756,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     const lastWeek = weeks[weeks.length - 1]
     const days = activeDays(games, now, 30)
     const summary = summarize(games, now)
-    const today = todayStats(ratingGames, now)
-    todaySnapshot = today
+    const today = todaySnapshot
     const rating = ratingSnapshot(
       ratingGames,
       settings.anchors,
@@ -1034,7 +875,10 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       .join('')
 
     return (
-      ratingOverviewHtml(rating, { anchorMode: settings.anchorMode, anchorError }) +
+      ratingOverviewHtml(rating, {
+        anchorMode: settings.anchorMode,
+        anchorError: snapshot.anchors.error,
+      }) +
       '<div class="kpi-grid kpi-grid-3">' +
       '<div class="kpi"><span>近 30 天新 PB</span>' +
       `<b>${recentCount}</b>` +
@@ -1204,7 +1048,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
         )
 
     // 未限制 NF 的榜单不加「普通 / 全部」范围标注；只在真的筛了 NF 时说明「仅 NF」。
-    const scope = state.nfOnly ? '仅 NF' : ''
+    const scope = filterState.nfOnly ? '仅 NF' : ''
     const subtitle = triple
       ? `三难度纵向 · 各前 10${scope ? ` · ${scope}` : ''}`
       : scope
@@ -1248,8 +1092,8 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       .map(({ week, delta }) => {
         trendWeekCopies.set(week.start, weekCopyText(week, {
           delta,
-          software: csvMode ? 'all' : state.software,
-          nfOnly: state.nfOnly,
+          software: csvMode ? 'all' : filterState.software,
+          nfOnly: filterState.nfOnly,
           range: bounds,
         }))
         const levelBlock = (level: Level): string => {
@@ -1873,12 +1717,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   nav.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>('[data-nav]')
     if (!button) return
-    const key = button.dataset.nav as NavKey
-    if (key === state.nav) return
-    // 页内面板随梁山分页签消失时丢弃草稿，顶部选项恢复为已应用的时段。
-    if (state.rangeEditor?.owner === 'lsf') state.rangeEditor = null
-    state.nav = key
-    render()
+    controller.selectTab(button.dataset.nav as AnalysisTab)
   })
 
   viewHost.addEventListener('click', (event) => {
@@ -1891,8 +1730,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
     const lsfMore = target.closest<HTMLElement>('[data-lsf-more]')
     if (lsfMore) {
-      state.lsfLimit += LSF_LEDGER_STEP
-      render()
+      controller.showMoreLsfEvents()
       return
     }
     const lsfPoint = target.closest<HTMLElement>('[data-lsf-event]')
@@ -1953,64 +1791,49 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
     const stat = target.closest<HTMLElement>('[data-rank-stat]')
     if (stat) {
-      state.rankStat = stat.dataset.rankStat as RankStat
-      render()
+      controller.updateTab({ rankStat: stat.dataset.rankStat as RankStat })
       return
     }
     const view = target.closest<HTMLElement>('[data-rank-view]')
     if (view) {
       const value = view.dataset.rankView
-      if (value === 'triple') {
-        state.rankLayout = 'triple'
-      } else {
-        state.rankLayout = 'single'
-        state.rankLevel = value as Level
-      }
-      render()
+      if (value === 'triple') controller.updateTab({ rankLayout: 'triple' })
+      else controller.updateTab({ rankLayout: 'single', rankLevel: value as Level })
       return
     }
     const trendLevel = target.closest<HTMLElement>('[data-trend-level]')
     if (trendLevel) {
-      state.trendLevel = trendLevel.dataset.trendLevel as Level
-      render()
+      controller.updateTab({ trendLevel: trendLevel.dataset.trendLevel as Level })
       return
     }
     const distLevel = target.closest<HTMLElement>('[data-dist-level]')
     if (distLevel) {
-      state.distLevel = distLevel.dataset.distLevel as Level
-      render()
+      controller.updateTab({ distLevel: distLevel.dataset.distLevel as Level })
       return
     }
     const periodMode = target.closest<HTMLElement>('[data-period-mode]')
     if (periodMode) {
-      state.periodMode = periodMode.dataset.periodMode as PeriodMode
-      state.periodKey = ''
-      render()
+      controller.updateTab({ periodMode: periodMode.dataset.periodMode as PeriodMode })
       return
     }
     const periodLevel = target.closest<HTMLElement>('[data-period-level]')
     if (periodLevel) {
-      state.periodLevel = periodLevel.dataset.periodLevel as Level
-      state.periodKey = ''
-      render()
+      controller.updateTab({ periodLevel: periodLevel.dataset.periodLevel as Level })
       return
     }
     const periodStat = target.closest<HTMLElement>('[data-period-stat]')
     if (periodStat) {
-      state.periodStat = periodStat.dataset.periodStat as RankStat
-      render()
+      controller.updateTab({ periodStat: periodStat.dataset.periodStat as RankStat })
       return
     }
     const effLevel = target.closest<HTMLElement>('[data-eff-level]')
     if (effLevel) {
-      state.effLevel = effLevel.dataset.effLevel as Level
-      render()
+      controller.updateTab({ effLevel: effLevel.dataset.effLevel as Level })
       return
     }
     const mapLevel = target.closest<HTMLElement>('[data-map-level]')
     if (mapLevel) {
-      state.mapLevel = mapLevel.dataset.mapLevel as Level
-      render()
+      controller.updateTab({ mapLevel: mapLevel.dataset.mapLevel as Level })
     }
   })
 
@@ -2068,107 +1891,43 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       return
     }
     if (input.id === 'analysis-hide-empty') {
-      state.hideEmptyMonths = input.checked
-      render()
+      controller.updateTab({ hideEmptyMonths: input.checked })
       return
     }
     if (input.id === 'period-select') {
-      state.periodKey = input.value
-      render()
+      controller.updateTab({ periodKey: input.value })
       return
     }
     if (input.id === 'analysis-nf-global') {
-      state.nfOnly = input.checked
-      applyFilters()
-      render()
+      controller.setFilters({ nfOnly: input.checked })
     }
   })
 
   softwareSelect.addEventListener('change', () => {
-    state.software = softwareSelect.value
-    applyFilters()
-    render()
+    controller.setFilters({ software: softwareSelect.value })
   })
 
-  function update(next: Video[], options: { csv?: boolean } = {}): void {
-    videos = next
-    csvMode = options.csv === true
-    if (csvMode) {
-      softwareSelect.value = 'all'
-    } else {
-      softwareSelect.value = state.software
-    }
-    softwareField.classList.toggle('hidden', csvMode)
-    now = Date.now()
-    ratingGames = analyzeGames(videos, {}, 1)
-    // 换数据源 / 玩家：旧历史与展开定位状态一起作废。
-    videosToken += 1
-    lsfCache = null
-    lsfEvents = []
-    state.lsfExpanded.clear()
-    state.lsfLimit = LSF_LEDGER_STEP
-    state.lsfFocus = ''
-    state.lsfFocusDay = null
-    // 换数据源 / 玩家：未应用的自定义草稿与错误一并作废，已应用的时段保留。
-    state.rangeEditor = null
-    applyFilters()
-    render()
+  let datasetVersion = 0
+
+  function update(next: Video[], options: AnalysisUpdateOptions = {}): void {
+    datasetVersion += 1
+    const csv = options.csv === true
+    controller.setDataset({
+      source: csv ? 'csv' : 'site',
+      // 第四批由页面控制器传入真实玩家 / CSV 快照身份；本批先按数据源区分。
+      identity: options.identity ?? (csv ? 'csv' : 'site'),
+      contentVersion: datasetVersion,
+      videos: next,
+    })
   }
 
-  applyFilters()
   render()
 
-  async function loadSiteAnchors(force = false): Promise<boolean> {
-    const request = ++anchorRequest
-    try {
-      const fetched = await fetchLsfAnchors(force)
-      if (request !== anchorRequest) return false
-      Object.assign(settings.anchors, fetched.anchors)
-      settings.anchorMode = 'site'
-      anchorError = fetched.stale
-      settingsPanel.refreshAnchors()
-      const hours = Math.max(1, Math.round((Date.now() - fetched.fetchedAt) / (60 * 60 * 1000)))
-      settingsPanel.setAnchorStatus(
-        fetched.stale
-          ? `站点请求失败，沿用 ${hours} 小时前的网站锚点`
-          : '已读取网站锚点',
-      )
-      saveAnalysisSettings(settings)
-      render()
-      return true
-    } catch {
-      if (request !== anchorRequest) return false
-      anchorError = true
-      settingsPanel.setAnchorStatus(
-        settings.anchorMode === 'site'
-          ? '网站锚点刷新失败，继续用已保存的网站锚点'
-          : '网站锚点读取失败，继续用大表锚点',
-      )
-      render()
-      return false
-    }
-  }
-
-  if (options.autoSiteAnchors !== false && settings.anchorMode === 'site') {
-    void loadSiteAnchors()
-  }
-
   function destroy(): void {
+    unsubscribe()
+    controller.destroy()
     editorFocus.destroy()
     settingsPanel.destroy()
-    // 让晚到的锚点响应失效，避免销毁后的视图继续改设置或重绘。
-    anchorRequest += 1
-    videos = []
-    games = []
-    rangeGames = []
-    ratingGames = []
-    videosToken += 1
-    lsfCache = null
-    lsfEvents = []
-    state.lsfExpanded.clear()
-    state.lsfFocus = ''
-    state.lsfFocusDay = null
-    state.rangeEditor = null
     root.replaceChildren()
     root.remove()
   }
