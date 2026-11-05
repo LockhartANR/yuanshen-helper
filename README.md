@@ -260,7 +260,8 @@ src/
 │       ├── analysis-range.ts     # 共用时段选项、自定义日期与本地日历边界
 │       ├── analysis-settings.ts  # 榜单 / 权重 / T37 / 3BV / 色板 / 锚点参数
 │       ├── gc-coefficients.ts    # GC 战力系数（从工作簿提取）
-│       ├── analysis-view.ts      # 赛博大表 UI
+│       ├── analysis-view.ts      # 赛博大表状态与页签装配
+│       ├── ui/                   # 定阶 / 梁山分展示、时段 / 参数控件与编辑定位
 │       ├── api.ts                # 录像列表 / 明细分批请求、限流退避
 │       ├── colors.ts             # 原表色板与取色
 │       ├── csv.ts                # Arbiter / Anthropic stats CSV 解析

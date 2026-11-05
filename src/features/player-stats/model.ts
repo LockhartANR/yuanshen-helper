@@ -2,6 +2,9 @@
 export const LEVELS = ['b', 'i', 'e'] as const
 export type Level = (typeof LEVELS)[number]
 
+/** 三阶难度的界面名称；概览、梁山分与参数面板共用同一份文案。 */
+export const LEVEL_LABELS: Record<Level, string> = { b: '初级', i: '中级', e: '高级' }
+
 /** 前端成绩的三个指标：time / 3bvs / stnb。 */
 export const TOP_STATS = ['time', 'bvs', 'stnb'] as const
 export type TopStat = (typeof TOP_STATS)[number]

@@ -11,6 +11,11 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
+/** 预览文本、提示文案等按纯文本插入，不当作 HTML 解析。 */
+export function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 /** 站外链接：统一新标签页打开，避免把扩展页面顶掉。 */
 export function externalLink(text: string, href: string): HTMLAnchorElement {
   const node = document.createElement('a')

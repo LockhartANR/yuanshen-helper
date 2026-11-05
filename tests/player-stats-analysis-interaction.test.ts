@@ -521,3 +521,36 @@ describe('周 T37 复制', () => {
     expect(writeText).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('参数面板联动', () => {
+  it('修改 3BV 下限立即重筛并保存；非法输入回填且不保存', () => {
+    const saved: string[] = []
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: (_key: string, value: string) => saved.push(value),
+    })
+    view.update([video({ id: 1, bv: 20, end_time: date(2) })])
+    expect(findClass('source-note').textContent).toBe('统计样本 1 局')
+
+    const t37 = root.all().find(
+      (node) =>
+        node.tag === 'table' && node.all().some((cell) => cell.textContent === 'PPP 常数'),
+    )!
+    const row = t37
+      .all()
+      .find((node) => node.tag === 'tr' && node.children[0]?.textContent === '初级')!
+    const floor = row.children[4]!.children[0]!
+
+    floor.value = '150'
+    floor.emit('change')
+    expect(findClass('source-note').textContent).toBe('统计样本 0 局')
+    expect(findClass('sample-floor').textContent).toBe('3BV 下限：初 150 / 中 30 / 高 100')
+    expect(saved).toHaveLength(1)
+    expect((JSON.parse(saved[0]!) as { bvFloors: { b: number } }).bvFloors.b).toBe(150)
+
+    floor.value = '0'
+    floor.emit('change')
+    expect(floor.value).toBe('150')
+    expect(saved).toHaveLength(1)
+  })
+})

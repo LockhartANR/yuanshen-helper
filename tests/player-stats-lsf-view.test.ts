@@ -5,11 +5,10 @@ import {
   lsfLedgerHtml,
   lsfNoticeHtml,
   lsfStatsHtml,
-  rangePanelHtml,
-  rangeSelectHtml,
-  ratingOverviewHtml,
-} from '../src/features/player-stats/analysis-view'
-import type { RangeControlState } from '../src/features/player-stats/analysis-view'
+} from '../src/features/player-stats/ui/lsf-view'
+import { rangePanelHtml, rangeSelectHtml } from '../src/features/player-stats/ui/range-control'
+import type { RangeControlState } from '../src/features/player-stats/ui/range-control'
+import { ratingOverviewHtml } from '../src/features/player-stats/ui/rating-view'
 import { RANGE_OPTIONS, formatDateInput, resolveRange, startOfLocalDay } from '../src/features/player-stats/analysis-range'
 import { analyzeGames } from '../src/features/player-stats/analysis'
 import { buildLsfHistory, lsfRange } from '../src/features/player-stats/lsf-history'
