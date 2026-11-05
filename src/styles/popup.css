@@ -26,6 +26,14 @@ body {
   gap: 2px;
 }
 
+.icon-button.watch-toggle {
+  display: inline-flex;
+  gap: 3px;
+  width: auto;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
 .icon-button.upload-entry {
   position: relative;
 }
@@ -39,11 +47,11 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #d97706;
+  background: var(--warn);
 }
 
 .icon-button.upload-entry.needs-attention {
-  color: #d97706;
+  color: var(--warn);
 }
 
 .icon-button.upload-entry.needs-attention::after {
@@ -52,16 +60,16 @@ body {
 
 .icon-button.upload-entry.is-running::after {
   display: block;
-  background: #16a34a;
+  background: var(--success);
 }
 
 .icon-button.upload-entry.is-stopped::after {
   display: block;
-  background: #dc2626;
+  background: var(--danger);
 }
 
 .icon-button.is-active {
-  color: #16a34a;
+  color: var(--success);
 }
 
 .brand {
@@ -134,8 +142,8 @@ body {
   padding: 5px 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface);
-  color: var(--fg);
+  background: transparent;
+  color: var(--muted);
   font-size: 12px;
   text-align: left;
 }
@@ -152,7 +160,7 @@ body {
 }
 
 .csv-entry-label {
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .csv-entry-note {
@@ -166,7 +174,7 @@ body {
   display: grid;
   flex: none;
   place-items: center;
-  width: 30px;
+  width: 42px;
   height: 30px;
   padding: 0;
   overflow: hidden;
@@ -187,8 +195,8 @@ body {
 }
 
 .toggle-glyph {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1;
 }
 

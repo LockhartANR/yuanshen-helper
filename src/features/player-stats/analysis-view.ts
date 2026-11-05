@@ -848,6 +848,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   const softwareField = el('label', 'filter')
   softwareField.append(el('span', 'filter-label', '软件'), softwareSelect)
   const countNote = el('span', 'source-note')
+  const floorNote = el('span', 'source-note sample-floor')
   const nfField = el('label', 'check')
   const nfInput = el('input')
   nfInput.type = 'checkbox'
@@ -856,7 +857,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   nfField.append(nfInput, document.createTextNode(' 只看 NF'))
   const settingsButton = el('button', 'button', '参数')
   settingsButton.type = 'button'
-  filters.append(rangeField, rangePanel, softwareField, nfField, countNote, settingsButton)
+  filters.append(rangeField, softwareField, nfField, countNote, floorNote, settingsButton)
 
   const settingsPanel = el('section', 'analysis-settings hidden')
   const sourceNote = el('p', 'muted settings-source', '默认参数为大表 57.8 · ')
@@ -1178,7 +1179,15 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     render()
   })
   settingsPanel.append(anchorBlock, weightsBlock, colorBlock, advanced, resetSettings)
-  settingsButton.addEventListener('click', () => settingsPanel.classList.toggle('hidden'))
+  settingsButton.setAttribute('aria-expanded', 'false')
+  settingsButton.addEventListener('click', () => {
+    const open = !settingsPanel.classList.toggle('hidden')
+    settingsButton.setAttribute('aria-expanded', String(open))
+    revealEditorControl(
+      open ? settingsPanel.querySelector<HTMLElement>('input') : settingsButton,
+      open ? settingsPanel : undefined,
+    )
+  })
 
   const nav = el('nav', 'analysis-nav')
   const navButtons = new Map<NavKey, HTMLButtonElement>()
@@ -1360,7 +1369,43 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   const credit = el('p', 'analysis-note', '统计方式来自大表 ArbiterStatsAuto · ')
   credit.append(authorHomeLink())
 
-  root.append(filters, settingsPanel, nav, viewHost, note, credit)
+  const toolbar = el('div', 'analysis-toolbar')
+  toolbar.append(filters, nav)
+  root.append(toolbar, rangePanel, settingsPanel, viewHost, note, credit)
+  let editorRevealFrame: number | null = null
+
+  // 浮层只包含短筛选与页签；按真实高度设置滚动留白，窄矮窗口和长面板暂停吸顶。
+  function updateToolbar(): void {
+    const height = toolbar.getBoundingClientRect().height
+    const floating = !state.rangeEditor && settingsPanel.classList.contains('hidden') &&
+      height <= window.innerHeight * 0.4
+    toolbar.classList.toggle('is-static', !floating)
+    root.style.setProperty('--analysis-toolbar-height', floating ? `${height}px` : '0px')
+  }
+
+  /** 面板脱离吸顶层后先滚到编辑区；收起时恢复入口焦点和可见位置。 */
+  function revealEditorControl(control: HTMLElement | null, panel?: HTMLElement): void {
+    updateToolbar()
+    if (editorRevealFrame !== null) window.cancelAnimationFrame(editorRevealFrame)
+    // 等展开与取消吸顶的布局完成，避免浏览器滚动锚定抵消本次定位。
+    editorRevealFrame = window.requestAnimationFrame(() => {
+      editorRevealFrame = null
+      const target = panel ?? control
+      if (!target?.isConnected || !root.contains(target)) return
+      control?.focus({ preventScroll: true })
+      target.scrollIntoView({ block: panel ? 'start' : 'nearest', behavior: 'instant' })
+    })
+  }
+  const toolbarObserver = new ResizeObserver(updateToolbar)
+  toolbarObserver.observe(toolbar)
+  window.addEventListener('resize', updateToolbar)
+  root.addEventListener('focusin', (event) => {
+    const target = event.target as HTMLElement | null
+    if (!target || toolbar.contains(target) || toolbar.classList.contains('is-static')) return
+    if (target.getBoundingClientRect().top < toolbar.getBoundingClientRect().bottom) {
+      target.scrollIntoView({ block: 'center' })
+    }
+  })
 
   function applyFilters(bounds: DateRange = currentBounds(Date.now())): void {
     const filtered = analyzeGames(
@@ -1412,12 +1457,16 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
   /** 计入局数与筛选提示：梁山分有自己的口径，不沿用其他页签筛选后的计数。 */
   function updateCountNote(): void {
+    floorNote.textContent = `3BV 下限：初 ${settings.bvFloors.b} / 中 ${settings.bvFloors.i} / 高 ${settings.bvFloors.e}`
+    floorNote.classList.toggle('hidden', state.nav === 'lsf')
     if (state.nav === 'lsf') {
+      countNote.title = '全时段有效记录用于梁山分定阶，日期仅截取历史分析时段。'
       countNote.textContent =
-        `计入 ${formatCount(lsfHistory().includedCount)} 局 · 全时段 · 不受软件 / 只看 NF 筛选`
+        `全时段有效记录 ${formatCount(lsfHistory().includedCount)} 局 · 不受软件 / 只看 NF 筛选 · 日期用于历史分析`
       return
     }
-    countNote.textContent = `计入 ${formatCount(games.length)} 局${state.nfOnly ? ' · NF' : ''}`
+    countNote.textContent = `统计样本 ${formatCount(games.length)} 局${state.nfOnly ? ' · NF' : ''}`
+    countNote.title = '应用公共筛选及各级 3BV 下限；今日成绩、月年局数和全时段定阶使用各自口径。'
   }
 
   /** 梁山分只用时间截取历史；软件与只看 NF 在该页禁用，离开时恢复。 */
@@ -1469,12 +1518,14 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
   /** 重绘后把焦点交回对应入口的时段控件，键盘操作不被打断。 */
   function focusRangeControl(owner: 'global' | 'lsf', target: 'select' | 'start' = 'select'): void {
-    const host = owner === 'lsf' ? viewHost : filters
-    const selector =
-      target === 'select'
-        ? `select[data-range-select="${owner}"]`
-        : `[data-range-panel="${owner}"] input[data-range-date="start"]`
-    host.querySelector<HTMLElement>(selector)?.focus()
+    if (target === 'start') {
+      const panel = (owner === 'lsf' ? viewHost : rangePanel)
+        .querySelector<HTMLElement>(`[data-range-panel="${owner}"]`)
+      revealEditorControl(panel?.querySelector<HTMLElement>('input[data-range-date="start"]') ?? null, panel ?? undefined)
+    } else {
+      const host = owner === 'lsf' ? viewHost : rangeSelectSlot
+      revealEditorControl(host.querySelector<HTMLElement>(`select[data-range-select="${owner}"]`))
+    }
   }
 
   /** 切换时段后，旧的定位与单日高亮不再指向当前流水。 */
@@ -1543,6 +1594,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     renderNav()
     renderRangeControls(clock)
     updateFilterAvailability()
+    updateToolbar()
     if (state.nav === 'overview') {
       viewHost.innerHTML = overviewHtml()
     } else if (state.nav === 'lsf') {
@@ -1751,13 +1803,17 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       })
       .join('')
 
+    const recentDates = recent.map((item) => item.game.date).sort((a, b) => a - b)
     const recentRows = recent
       .map(({ game, prev }) => {
         const delta = prev - game.time
         const hot = now - game.date <= 7 * DAY_MS
+        const dateStyle = recentDates.length > 1
+          ? dateColorStyle(game.date, recentDates[0]!, medianOf(recentDates), recentDates[recentDates.length - 1]!)
+          : null
         return (
           `<tr${hot ? ' class="hot"' : ''}>` +
-          `<td class="date"${dateAttr(game.date, recent.map((item) => item.game.date))}>${formatShortDate(game.date)}</td>` +
+          `<td class="date recent-pb-date"${dateStyle ? ` style="--recent-date:${dateStyle.backgroundColor}"` : ''}>${formatShortDate(game.date)}</td>` +
           `<td>${LEVEL_LABELS[game.level]}</td>` +
           `<td class="num">${game.bv}</td>` +
           `<td class="num"${colorAttr(game.level, 'time', game.time)}>${formatTime(game.time)}</td>` +
@@ -1811,10 +1867,12 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
       '<div class="card">' +
       '<div class="card-head"><h2 class="card-title">今日成绩</h2></div>' +
+      (today.some((row) => row.count > 0) ?
       '<div class="table-scroll"><table class="data-table summary-table today-table">' +
       '<thead><tr><th>难度</th><th class="num">总局数</th><th class="num">Best Time</th><th class="num">Best 3BVS</th><th class="num">Best STNB</th><th class="num">Avg Time</th><th class="num">Avg 3BVS</th><th class="num">Avg STNB</th><th class="num">Avg 3BV</th><th class="copy-cell"></th></tr></thead>' +
       `<tbody>${todayRows}</tbody>` +
-      '</table></div>' +
+      '</table></div>' : '<p class="today-empty">今日暂无成绩</p>') +
+      '<p class="today-scope">按当前数据源的基础有效记录统计，不受公共筛选与统计 3BV 下限影响。</p>' +
       '</div>' +
 
       '<div class="card">' +
@@ -1827,7 +1885,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
       '<div class="card">' +
       '<div class="card-head"><h2 class="card-title">GC 指标</h2><span class="muted">ASB / 战力 / 典型时</span></div>' +
-      '<table class="data-table">' +
+      '<table class="data-table gc-table">' +
       '<thead><tr><th>难度</th><th class="num">ASB 和</th><th class="num">战力</th><th class="num">典型时</th></tr></thead>' +
       `<tbody>${gcRows}${gcTotalRow}</tbody>` +
       '</table>' +
@@ -1872,7 +1930,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       `<div class="cal-stat"><span>活跃天数</span><b>${calendar.activeDays}</b></div>` +
       `<div class="cal-stat"><span>活跃日均</span><b>${calendar.activeDays > 0 ? (calendar.total / calendar.activeDays).toFixed(1) : '—'}</b></div>` +
       `<div class="cal-stat"><span>最长连续</span><b>${calendar.longestStreak} 天</b></div>` +
-      `<div class="cal-stat"><span>最活跃日</span><b>${calendar.best ? `${formatShortDate(calendar.best.start)} · ${calendar.best.count} 局` : '—'}</b></div>` +
+      `<div class="cal-stat"><span>最活跃日</span><b class="best-day">${calendar.best ? `<span>${formatShortDate(calendar.best.start)}</span><span>${calendar.best.count} 局</span>` : '—'}</b></div>` +
       '</div>' +
       '</div>' +
       '</div>' +
@@ -2030,7 +2088,7 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
             '<div class="week-level-block">' +
             `<div class="week-level-head">${LEVEL_LABELS[level]} · ${data.slot} 条</div>` +
             '<table class="data-table week-slot-table">' +
-            `<thead><tr><th class="num">排名</th><th class="num">${prefix}t</th><th class="num">${prefix}b</th><th class="num">${prefix}s</th></tr></thead>` +
+            `<thead><tr><th class="num">排名</th><th class="num"><abbr title="${LEVEL_LABELS[level]}用时">${prefix}t</abbr></th><th class="num"><abbr title="${LEVEL_LABELS[level]} 3BVS">${prefix}b</abbr></th><th class="num"><abbr title="${LEVEL_LABELS[level]} STNB">${prefix}s</abbr></th></tr></thead>` +
             `<tbody>${rows}` +
             `<tr class="week-total"><td>总计</td><td class="num">${data.totals.time.toFixed(3)}</td><td class="num">${data.totals.bvs.toFixed(3)}</td><td class="num">${data.totals.stnb.toFixed(2)}</td></tr>` +
             `<tr class="week-average"><td>平均</td><td class="num"${colorAttr(level, 'time', data.averages.time)}>${data.averages.time.toFixed(3)}</td><td class="num"${colorAttr(level, 'bvs', data.averages.bvs)}>${data.averages.bvs.toFixed(3)}</td><td class="num"${colorAttr(level, 'stnb', data.averages.stnb)}>${data.averages.stnb.toFixed(2)}</td></tr>` +
@@ -2038,22 +2096,22 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
           )
         }
         const detail =
-          '<tr class="week-detail hidden"><td colspan="8"><div class="week-level-grid">' +
+          `<tr id="week-detail-${week.start}" class="week-detail hidden"><td colspan="8"><h3 class="week-detail-title">${formatShortDate(week.start)} 当周明细</h3><div class="week-level-grid">` +
           `<div class="week-level-column">${levelBlock('b')}</div>` +
           `<div class="week-level-column">${levelBlock('i')}${levelBlock('e')}</div>` +
           '</div>' +
           '<div class="week-summary">' +
-          `<span>T.37 <b>${week.t37.toFixed(2)}</b></span>` +
-          `<span>B.37 <b>${week.b37.toFixed(3)}</b></span>` +
-          `<span>S.37 <b>${week.s37.toFixed(1)}</b></span>` +
-          `<span>BPP${week.levels.b.slot} <b>${week.levels.b.ppp.toFixed(2)}</b></span>` +
-          `<span>IPP${week.levels.i.slot} <b>${week.levels.i.ppp.toFixed(2)}</b></span>` +
-          `<span>EPP${week.levels.e.slot} <b>${week.levels.e.ppp.toFixed(2)}</b></span>` +
-          `<span>PPP37 <b>${week.ppp.toFixed(2)}</b></span>` +
+          `<span><abbr title="三难度槽位的用时总和">T.37</abbr> <b>${week.t37.toFixed(2)}</b></span>` +
+          `<span><abbr title="三难度槽位的 3BVS 总和">B.37</abbr> <b>${week.b37.toFixed(3)}</b></span>` +
+          `<span><abbr title="三难度槽位的 STNB 总和">S.37</abbr> <b>${week.s37.toFixed(1)}</b></span>` +
+          `<span><abbr title="初级 ${week.levels.b.slot} 个槽位的 PPP 评分">BPP${week.levels.b.slot}</abbr> <b>${week.levels.b.ppp.toFixed(2)}</b></span>` +
+          `<span><abbr title="中级 ${week.levels.i.slot} 个槽位的 PPP 评分">IPP${week.levels.i.slot}</abbr> <b>${week.levels.i.ppp.toFixed(2)}</b></span>` +
+          `<span><abbr title="高级 ${week.levels.e.slot} 个槽位的 PPP 评分">EPP${week.levels.e.slot}</abbr> <b>${week.levels.e.ppp.toFixed(2)}</b></span>` +
+          `<span><abbr title="三难度 37 个槽位的 PPP 综合成绩">PPP37</abbr> <b>${week.ppp.toFixed(2)}</b></span>` +
           '</div></td></tr>'
         return (
           '<tr class="week-row" data-week-row="1">' +
-          `<td class="date"><span class="week-arrow">▸</span>${formatShortDate(week.start)}</td>` +
+          `<td class="date"><button type="button" class="week-toggle" data-week-toggle aria-expanded="false" aria-controls="week-detail-${week.start}" aria-label="展开 ${formatShortDate(week.start)} 当周明细"><span class="week-arrow" aria-hidden="true">▸</span>${formatShortDate(week.start)}</button></td>` +
           `<td class="num">${week.count}</td>` +
           `<td class="num">${week.t37.toFixed(1)}</td>` +
           `<td class="num">${week.b37.toFixed(1)}</td>` +
@@ -2689,7 +2747,12 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
       const detail = weekRow.nextElementSibling
       if (detail?.classList.contains('week-detail')) {
         detail.classList.toggle('hidden')
-        weekRow.classList.toggle('open')
+        const open = !detail.classList.contains('hidden')
+        weekRow.classList.toggle('open', open)
+        const control = weekRow.querySelector<HTMLElement>('[data-week-toggle]')
+        control?.setAttribute('aria-expanded', String(open))
+        if (control) control.setAttribute('aria-label', `${open ? '收起' : '展开'} ${control.textContent?.replace(/[▸▾]/g, '').trim()} 当周明细`)
+        if (!open && document.activeElement && detail.contains(document.activeElement)) control?.focus({ preventScroll: true })
         const arrow = weekRow.querySelector<HTMLElement>('.week-arrow')
         if (arrow) arrow.textContent = detail.classList.contains('hidden') ? '▸' : '▾'
       }
@@ -2906,6 +2969,9 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
   }
 
   function destroy(): void {
+    if (editorRevealFrame !== null) window.cancelAnimationFrame(editorRevealFrame)
+    toolbarObserver.disconnect()
+    window.removeEventListener('resize', updateToolbar)
     // 让晚到的锚点响应失效，避免销毁后的视图继续改设置或重绘。
     anchorRequest += 1
     videos = []

@@ -13,7 +13,7 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .player-header-text {
@@ -61,9 +61,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 18px;
-  margin-bottom: 10px;
-  padding: 11px 14px;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
@@ -104,10 +104,22 @@ body {
 }
 
 .player-status {
-  min-height: 18px;
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.today-empty {
+  margin: 0;
+  padding: 14px 16px 4px;
+  font-size: 13px;
+}
+
+.today-scope {
+  margin: 0;
+  padding: 8px 16px 12px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .card {
@@ -373,7 +385,7 @@ body {
 .page-tabs {
   display: flex;
   gap: 6px;
-  margin: 2px 0 12px;
+  margin: 0 0 8px;
 }
 
 .page-tab {
@@ -436,9 +448,83 @@ body {
 .analysis-nav {
   display: flex;
   gap: 2px;
-  margin: 10px 0 14px;
+  margin: 0;
   overflow-x: auto;
+}
+
+.analysis-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin-bottom: 12px;
+  padding-top: 6px;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
+}
+
+.analysis-toolbar.is-static {
+  position: static;
+}
+
+.analysis-toolbar .player-filters {
+  margin-bottom: 4px;
+}
+
+.analysis-pane > .range-panel-row:not(.hidden) {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.analysis-pane :is(button, input, select, [data-lsf-event-row]) {
+  scroll-margin-top: calc(var(--analysis-toolbar-height, 0px) + 12px);
+  scroll-margin-bottom: 12px;
+}
+
+.analysis-view > .card {
+  overflow-x: auto;
+}
+
+.data-table td.recent-pb-date,
+.data-table tr.hot td.recent-pb-date {
+  background: color-mix(in srgb, var(--recent-date, transparent) 18%, var(--bg));
+  color: var(--muted);
+}
+
+.cal-stat .best-day span {
+  display: block;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.gc-table {
+  width: auto;
+  min-width: min(100%, 480px);
+}
+
+.gc-table :is(td, th) {
+  white-space: nowrap;
+}
+
+.week-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.week-row.open > td {
+  background: var(--accent-soft);
+}
+
+.week-detail-title {
+  margin: 2px 0 10px;
+  font-size: 13px;
 }
 
 .analysis-tab {
@@ -1318,6 +1404,16 @@ body {
 }
 
 @media (max-width: 640px) {
+  .week-level-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .week-level-grid,
+  .week-summary,
+  .week-detail-title {
+    max-width: calc(100vw - 96px);
+  }
+
   .kpi-grid {
     grid-template-columns: 1fr;
   }

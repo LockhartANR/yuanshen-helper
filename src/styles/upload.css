@@ -77,3 +77,100 @@
 .rule-list li {
   margin: 0;
 }
+
+.upload-page details.card > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.upload-page details.card[open] > summary {
+  margin-bottom: 12px;
+}
+
+.upload-page .watch-state {
+  display: inline-block;
+  margin: 8px 0 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.upload-page .watch-state[data-state='watching'],
+.upload-page .watch-log-ok {
+  color: var(--success);
+}
+
+.upload-page .watch-state[data-state='needs-permission'],
+.upload-page .watch-state[data-state='waiting-login'],
+.upload-page .watch-log-warn {
+  background: var(--warn-soft);
+  color: var(--warn-fg);
+}
+
+.upload-page .watch-state[data-state='stopped'],
+.upload-page .has-failures,
+.upload-page .watch-log-err {
+  color: var(--danger);
+}
+
+.upload-page .watch-counters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.upload-page .watch-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.upload-page .watch-counter b {
+  font-size: 24px;
+}
+
+.upload-page .watch-counter span,
+.upload-page .watch-log-dim {
+  color: var(--muted);
+}
+
+.upload-page .watch-ledger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.upload-page .logs {
+  max-height: 300px;
+  overflow-y: auto;
+  overflow-anchor: none;
+}
+
+.upload-page .log-entry {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: 8px;
+}
+
+.upload-page .log-message {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+@media (max-width: 640px) {
+  .upload-page .setting-row { flex-wrap: wrap; }
+  .upload-page .setting-label { width: 100%; }
+  .upload-page .watch-counter { flex-direction: column; gap: 0; }
+  .upload-page .page-header { align-items: flex-start; }
+}

@@ -202,6 +202,10 @@ export async function mountPlayerStats(
   const notice = el('p', 'player-notice hidden')
 
   const status = el('p', 'player-status')
+  status.setAttribute('role', 'status')
+  const pbCount = el('span', 'source-note pb-count')
+  pbCount.title = '仅用于成绩概况的 PB 筛选，不代表赛博大表的统计样本。'
+  filters.append(pbCount)
 
   // ---- PB ----
   const pbTitle = el('h2', 'card-title', 'PB 表')
@@ -396,6 +400,7 @@ export async function mountPlayerStats(
     const empty =
       standaloneCsv && session.state.ready && session.state.sources.length === 0
     const waiting = csvWaiting()
+    const hasSnapshot = source === 'site' ? state.updatedAt > 0 : session.hasSnapshot()
     sourceBar.classList.toggle('hidden', embedded || empty)
     pageTabs.classList.toggle('hidden', embedded || empty || waiting)
     csvEmpty.classList.toggle('hidden', !empty)
@@ -403,9 +408,9 @@ export async function mountPlayerStats(
       'hidden',
       embedded || !(source === 'csv' && session.state.sources.length > 0),
     )
-    status.classList.toggle('hidden', empty || source === 'csv')
-    scorePane.classList.toggle('hidden', empty || waiting || page !== 'score')
-    analysisPane.classList.toggle('hidden', empty || waiting || page !== 'analysis')
+    status.classList.toggle('hidden', source === 'csv' || (!state.loading && !status.textContent))
+    scorePane.classList.toggle('hidden', !hasSnapshot || page !== 'score')
+    analysisPane.classList.toggle('hidden', !hasSnapshot || page !== 'analysis')
     scoreTab.classList.toggle('active', page === 'score')
     analysisTab.classList.toggle('active', page === 'analysis')
     scoreTab.setAttribute('aria-pressed', String(page === 'score'))
@@ -754,16 +759,17 @@ export async function mountPlayerStats(
         ? [
             `CSV ${records.length} 个文件`,
             `录像 ${formatCount(state.videos.length)}`,
-            `计入 ${formatCount(counted)}`,
+            `上次读取 ${formatDateTime(Math.max(0, ...records.map((record) => session.sourceSummary(record.sourceId)?.readAt ?? 0)))}`,
           ]
         : [`已关联 ${records.length} 个文件`, '尚未加载成绩']
       metaNode.textContent = parts.join(' · ')
     } else {
-      const parts = [`录像 ${formatCount(state.rows.length)}`, `计入 ${formatCount(counted)}`]
-      parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
+      const parts = [`录像 ${formatCount(state.rows.length)}`]
+      if (state.updatedAt > 0) parts.push(`更新于 ${formatDateTime(state.updatedAt)}`)
       if (state.fromCache) parts.push('（缓存）')
       metaNode.textContent = parts.join(' · ')
     }
+    pbCount.textContent = `PB 筛选计入 ${formatCount(counted)} 局`
 
     notice.classList.toggle('hidden', source !== 'site' || !state.includeUnapproved)
     notice.textContent =
@@ -947,6 +953,7 @@ export async function mountPlayerStats(
   function setLoading(loading: boolean, text = ''): void {
     state.loading = loading
     status.textContent = text || state.message
+    renderPage()
     refreshButton.disabled = loading
     cancelButton.classList.toggle('hidden', !loading)
     if (loading) cancelButton.textContent = '取消'

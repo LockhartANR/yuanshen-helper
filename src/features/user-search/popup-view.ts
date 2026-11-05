@@ -84,8 +84,8 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
 
   const uploadButton = el('button', 'icon-button upload-entry')
   uploadButton.type = 'button'
-  uploadButton.title = '自动上传'
-  uploadButton.setAttribute('aria-label', '打开自动上传')
+  uploadButton.title = '打开自动上传页'
+  uploadButton.setAttribute('aria-label', '打开自动上传页')
   uploadButton.append(icon('upload'))
   uploadButton.addEventListener('click', () => {
     void chrome.tabs.create({ url: chrome.runtime.getURL('upload.html') })
@@ -95,7 +95,7 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   watchButton.type = 'button'
   watchButton.title = '开始自动上传'
   watchButton.setAttribute('aria-label', '开始或暂停自动上传')
-  watchButton.append(icon('play'))
+  watchButton.append(icon('play'), el('span', undefined, '开始'))
   watchButton.addEventListener('click', () => void toggleWatch())
 
   const myStatsButton = el('button', 'icon-button stats-entry')
@@ -164,25 +164,27 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
     const watch = await getWatchSettings()
     const watching = watch.state === 'watching'
 
-    watchButton.replaceChildren(icon(watching ? 'pause' : 'play'))
+    watchButton.replaceChildren(icon(watching ? 'pause' : 'play'), el('span', undefined, watching ? '暂停' : '开始'))
     watchButton.title = watching ? '暂停自动上传' : '开始自动上传'
+    watchButton.setAttribute('aria-label', watchButton.title)
+    watchButton.setAttribute('aria-pressed', String(watching))
     watchButton.classList.toggle('is-active', watching)
 
     uploadButton.classList.remove('is-running', 'needs-attention', 'is-stopped')
     if (watching) {
       uploadButton.classList.add('is-running')
-      uploadButton.title = '自动上传 · 监视中'
+      uploadButton.title = '打开自动上传页 · 监视中'
     } else if (watch.state === 'waiting-login') {
       uploadButton.classList.add('needs-attention')
-      uploadButton.title = '自动上传 · 等待登录'
+      uploadButton.title = '打开自动上传页 · 等待登录'
     } else if (watch.state === 'needs-permission') {
       uploadButton.classList.add('needs-attention')
-      uploadButton.title = '自动上传 · 需要重新授权'
+      uploadButton.title = '打开自动上传页 · 需要重新授权'
     } else if (watch.state === 'stopped') {
       uploadButton.classList.add('is-stopped')
-      uploadButton.title = '自动上传 · 已停止'
+      uploadButton.title = '打开自动上传页 · 已停止'
     } else {
-      uploadButton.title = '自动上传'
+      uploadButton.title = '打开自动上传页'
     }
   }
 
@@ -199,7 +201,7 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   const searchRow = el('div', 'search-row')
   const identifierToggle = el('button', 'identifier-toggle')
   identifierToggle.type = 'button'
-  identifierToggle.append(el('span', 'toggle-glyph', '标'), el('span', 'toggle-slash'))
+  identifierToggle.append(el('span', 'toggle-glyph', '标识'), el('span', 'toggle-slash'))
   searchRow.append(searchBox, identifierToggle)
 
   const csvEntry = el('button', 'csv-entry')
@@ -732,13 +734,9 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
     }
 
     if (event.key !== 'Enter') return
-    if (
-      document.activeElement === syncButton ||
-      document.activeElement === optionsButton ||
-      document.activeElement === identifierToggle
-    ) {
-      return
-    }
+    // Tab 到入口或数据按钮后，Enter 交给原生按钮，避免被搜索快捷键截走。
+    const focused = document.activeElement
+    if (focused && focused !== searchInput && focused.matches('button, a, input, select, textarea, summary')) return
 
     event.preventDefault()
 

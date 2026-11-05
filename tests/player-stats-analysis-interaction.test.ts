@@ -13,10 +13,32 @@ class TestElement {
   listeners = new Map<string, Array<(event: { target: TestElement }) => void>>()
   className = ''
   textContent = ''
-  innerHTML = ''
+  private html = ''
+  get innerHTML(): string { return this.html }
+  set innerHTML(value: string) {
+    this.html = value
+    this.children = []
+    // 只投影动态时段控件，供真实渲染后的焦点与事件测试使用；不模拟表格布局。
+    for (const match of value.matchAll(/<select[^>]*data-range-select="([^"]+)"[^>]*>/g)) {
+      const select = new TestElement('select')
+      select.dataset.rangeSelect = match[1]!
+      this.append(select)
+    }
+    for (const match of value.matchAll(/<div[^>]*data-range-panel="([^"]+)"[^>]*>([\s\S]*?)<\/div>/g)) {
+      const panel = new TestElement('div')
+      panel.dataset.rangePanel = match[1]!
+      for (const inputMatch of match[2]!.matchAll(/<input[^>]*data-range-date="([^"]+)"[^>]*value="([^"]*)"/g)) {
+        const input = new TestElement('input')
+        input.dataset.rangeDate = inputMatch[1]!
+        input.value = inputMatch[2]!
+        panel.append(input)
+      }
+      this.append(panel)
+    }
+  }
   value = ''
   checked = false
-  style: Record<string, string> = {}
+  style = { setProperty: vi.fn(), position: '', opacity: '' }
   /** 复制反馈只写给仍连接在文档中的按钮；测试默认视为已连接。 */
   isConnected = true
   constructor(readonly tag: string) {}
@@ -42,6 +64,7 @@ class TestElement {
     return this.attributes.get(key) ?? null
   }
   matches(selector: string): boolean {
+    if (/^\w+$/.test(selector)) return this.tag === selector
     const match = /^(\w+)?\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(selector)
     return !!match && (!match[1] || match[1] === this.tag) && this.getAttribute(match[2]!) !== null &&
       (match[3] === undefined || this.getAttribute(match[2]!) === match[3])
@@ -50,6 +73,7 @@ class TestElement {
     return this.matches(selector) ? this : this.parent?.closest(selector) ?? null
   }
   all(): TestElement[] { return [this, ...this.children.flatMap((child) => child.all())] }
+  contains(node: TestElement): boolean { return this.all().includes(node) }
   querySelector(selector: string): TestElement | null {
     return this.all().slice(1).find((node) => node.matches(selector)) ?? null
   }
@@ -63,7 +87,13 @@ class TestElement {
     for (const listener of this.listeners.get(type) ?? []) listener({ target })
     this.parent?.emit(type, target)
   }
-  focus(): void {}
+  focus = vi.fn(() => {
+    (document as unknown as { activeElement: TestElement }).activeElement = this
+  })
+  scrollIntoView = vi.fn()
+  getBoundingClientRect(): { top: number; bottom: number; height: number } {
+    return { top: 0, bottom: 100, height: 100 }
+  }
   select(): void {}
   remove(): void {
     this.parent = null
@@ -114,7 +144,16 @@ beforeEach(() => {
   writeText = vi.fn().mockResolvedValue(undefined)
   vi.stubGlobal('navigator', { clipboard: { writeText } })
   // 复制反馈里的 1.2 秒复位不用真的等待。
-  vi.stubGlobal('window', { setTimeout: () => 0 })
+  vi.stubGlobal('window', {
+    setTimeout: () => 0, innerHeight: 800,
+    requestAnimationFrame: (callback: () => void) => { callback(); return 0 },
+    cancelAnimationFrame: vi.fn(),
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  })
+  vi.stubGlobal('ResizeObserver', class {
+    observe(): void {}
+    disconnect(): void {}
+  })
   vi.stubGlobal('document', {
     createElement: (tag: string) => new TestElement(tag),
     createTextNode: (text: string) => Object.assign(new TestElement('#text'), { textContent: text }),
@@ -127,6 +166,55 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('时段编辑切页', () => {
+  it('参数展开时定位编辑区，收起后恢复入口与吸顶', () => {
+    const toolbar = findClass('analysis-toolbar')
+    const panel = findClass('analysis-settings')
+    const button = root.all().find((node) => node.tag === 'button' && node.textContent === '参数')!
+    button.emit('click')
+    expect(panel.classList.contains('hidden')).toBe(false)
+    expect(toolbar.classList.contains('is-static')).toBe(true)
+    expect(panel.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'instant' })
+    expect(document.activeElement).toBe(panel.querySelector('input'))
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    button.emit('click')
+    expect(panel.classList.contains('hidden')).toBe(true)
+    expect(toolbar.classList.contains('is-static')).toBe(false)
+    expect(document.activeElement).toBe(button)
+    expect(button.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'instant' })
+  })
+
+  it.each(['global', 'lsf'])('%s 日期编辑打开及校验失败时聚焦开始日期，应用后恢复对应入口', (owner) => {
+    if (owner === 'lsf') nav('lsf')
+    pick('custom', owner)
+    const panelHost = owner === 'global' ? findClass('range-panel-row') : findClass('analysis-view')
+    const panel = panelHost.querySelector(`[data-range-panel="${owner}"]`)!
+    const start = panel.querySelector('input[data-range-date="start"]')!
+    expect(document.activeElement).toBe(start)
+    expect(start.focus).toHaveBeenCalledWith({ preventScroll: true })
+    expect(panel.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'instant' })
+    applyDraft('2026-11-03', '2026-11-01', owner)
+    const invalidPanel = panelHost.querySelector(`[data-range-panel="${owner}"]`)!
+    expect(document.activeElement).toBe(invalidPanel.querySelector('input[data-range-date="start"]'))
+    expect(invalidPanel.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'instant' })
+    applyDraft('2026-11-01', '2026-11-02', owner)
+    const selectHost = owner === 'global' ? findClass('range-select-slot') : findClass('analysis-view')
+    const select = selectHost.querySelector(`select[data-range-select="${owner}"]`)!
+    expect(document.activeElement).toBe(select)
+    expect(select.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', behavior: 'instant' })
+  })
+
+  it('全局日期编辑取消后恢复筛选入口，不修改已应用时段', () => {
+    pick('today', 'global')
+    pick('custom', 'global')
+    const cancel = new TestElement('button')
+    cancel.dataset.rangeCancel = ''
+    root.emit('click', cancel)
+    expect(findClass('range-panel-row').classList.contains('hidden')).toBe(true)
+    const select = findClass('range-select-slot').querySelector('select[data-range-select="global"]')!
+    expect(document.activeElement).toBe(select)
+    expect(findClass('range-select-slot').innerHTML).toContain('value="today" selected')
+  })
+
   it.each(['all', 'today'])('打开梁山分页内编辑后切到榜单，恢复已应用的 %s', (key) => {
     nav('lsf')
     pick(key)
@@ -173,12 +261,43 @@ describe('全局与历史共用有效日期', () => {
     view.update(videos)
     pick('today', 'global')
     nav('rank')
-    expect(findClass('source-note').textContent).toBe('计入 1 局')
+    expect(findClass('source-note').textContent).toBe('统计样本 1 局')
     expect(findClass('analysis-view').innerHTML).toContain('26/11/3')
     nav('lsf')
     expect(findClass('analysis-view').innerHTML.match(/data-lsf-event-row=/g)).toHaveLength(1)
     expect(findClass('analysis-view').innerHTML).toContain('上传时间')
 
+  })
+})
+
+describe('概览今日成绩与样本说明', () => {
+  it('三难度都没有今日成绩时显示紧凑空态，隐藏无内容的复制按钮', () => {
+    view.update([video({ end_time: date(2) })])
+    const html = findClass('analysis-view').innerHTML
+    expect(html).toContain('今日暂无成绩')
+    expect(html).toContain('不受公共筛选与统计 3BV 下限影响')
+    expect(html).not.toContain('today-table')
+    expect(html).not.toContain('data-copy-kind="today"')
+  })
+
+  it('低于下限的今日成绩在不含今天的范围和 NF 筛选下仍展示完整三难度表', () => {
+    view.update([video({ bv: 5, right: 2 })])
+    pick('custom', 'global')
+    applyDraft('2026-11-01', '2026-11-02', 'global')
+    const nf = root.all().find((node) => (node as unknown as { id?: string }).id === 'analysis-nf-global')!
+    nf.checked = true
+    nf.emit('change')
+    expect(findClass('source-note').textContent).toBe('统计样本 0 局 · NF')
+    const html = findClass('analysis-view').innerHTML
+    expect(html).toContain('today-table')
+    expect(html).not.toContain('今日暂无成绩')
+    expect(html.match(/data-copy-kind="today"/g)).toHaveLength(3)
+    expect(html).toContain('1（1FL/0NF）')
+    expect(findClass('sample-floor').textContent).toBe('3BV 下限：初 10 / 中 30 / 高 100')
+    nav('lsf')
+    expect(findClass('sample-floor').classList.contains('hidden')).toBe(true)
+    expect(findClass('source-note').textContent).toContain('全时段有效记录')
+    expect(findClass('source-note').textContent).toContain('日期用于历史分析')
   })
 })
 
@@ -226,6 +345,8 @@ describe('周 T37 复制', () => {
     expect(html).toContain('<td colspan="8">')
     expect(html).toContain('data-copy-panel="month"')
     expect(html).toContain('data-copy-panel="year"')
+    expect(html).toContain('26/11/2 当周明细')
+    expect(html).toContain('aria-expanded="false" aria-controls="week-detail-')
   })
 
   it('复制当前周六行文本，不重绘或收起已展开的明细', async () => {
@@ -238,9 +359,13 @@ describe('周 T37 复制', () => {
     detail.className = 'week-detail hidden'
     row.nextElementSibling = detail
     const button = weekButton(CURRENT_START)
-    row.append(button)
+    const toggle = new TestElement('button')
+    toggle.dataset.weekToggle = ''
+    toggle.textContent = '▸26/11/2'
+    row.append(toggle, button)
     host.emit('click', row)
     expect(detail.classList.contains('hidden')).toBe(false)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
     host.emit('click', button)
     await flush()
     expect(writeText).toHaveBeenCalledTimes(1)
@@ -255,6 +380,9 @@ describe('周 T37 复制', () => {
     expect(host.innerHTML).toBe(before)
     expect(detail.classList.contains('hidden')).toBe(false)
     expect(row.classList.contains('open')).toBe(true)
+    host.emit('click', toggle)
+    expect(detail.classList.contains('hidden')).toBe(true)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('未知复制类型直接拒绝，不请求剪贴板', async () => {

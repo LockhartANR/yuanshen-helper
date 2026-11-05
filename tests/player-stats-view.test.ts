@@ -220,6 +220,23 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('本地 CSV 关联清单', () => {
+  it('PB 计数只归属成绩概况，空状态行不占位且初次读取不展示分析空态', async () => {
+    const pending = deferred<LoadedPlayer>()
+    vi.mocked(loadPlayer).mockReturnValueOnce(pending.promise)
+    await mount()
+    expect(byClass('pb-grids').visible()).toBe(false)
+    expect(byClass('player-status').visible()).toBe(true)
+    pending.resolve(loaded())
+    await vi.waitFor(() => expect(byClass('pb-count').visible()).toBe(true))
+    expect(byClass('pb-count').textContent).toBe('PB 筛选计入 1 局')
+    expect(byClass('player-meta').textContent).not.toContain('计入')
+    expect(byClass('player-status').visible()).toBe(false)
+    visibleButton('赛博大表').click()
+    expect(byClass('pb-count').visible()).toBe(false)
+    visibleButton('成绩概况').click()
+    expect(byClass('pb-count').visible()).toBe(true)
+    expect(createAnalysisViewMock).toHaveBeenCalledTimes(1)
+  })
   it('普通玩家页默认网站数据，不自动读取已关联文件', async () => {
     const handle = new ViewHandle('a.csv', csv(5000))
     await seed([handle])

@@ -35,6 +35,8 @@ const STATE_LABEL: Record<WatchState, string> = {
   stopped: '已停止',
 }
 
+const LOG_LABEL = { dim: '记录', ok: '成功', warn: '警告', err: '错误' }
+
 function clampInterval(value: number): number {
   if (!Number.isFinite(value)) return 10
   return Math.min(INTERVAL_MAX, Math.max(INTERVAL_MIN, Math.round(value)))
@@ -48,7 +50,9 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   let status: WatchStatus = await getWatchStatus()
   let handle: FileSystemDirectoryHandle | null = await getWatchHandle()
   let logs: WatchLogEntry[] = await getWatchLogs()
+  let renderedLogs = ''
   let permission: PermissionState = handle ? await queryPermission(handle) : 'prompt'
+  let permissionRequest = 0
   let flash = ''
   let flashTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -62,7 +66,7 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
     render()
   }
 
-  const page = el('div', 'page')
+  const page = el('div', 'page upload-page')
 
   const header = el('header', 'page-header')
   const brand = el('div', 'page-brand')
@@ -83,12 +87,6 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   consoleLink.rel = 'noreferrer'
 
   const headerActions = el('div', 'header-links')
-  if (permission !== 'granted') {
-    const grant = el('button', 'button primary', '重新授权') as HTMLButtonElement
-    grant.type = 'button'
-    grant.addEventListener('click', () => void startWatching())
-    headerActions.append(grant)
-  }
   headerActions.append(consoleLink)
   header.append(brand, headerActions)
 
@@ -190,9 +188,18 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   settingsCard.append(modeRow, intervalRow, optionRow)
 
   // ---------------- 运行 ----------------
-  const runCard = el('section', 'card')
+  const runCard = el('section', 'card watch-run')
   runCard.append(el('h2', undefined, '运行状态'))
-  const stateLine = el('p', 'desc')
+  const stateLine = el('p', 'watch-state')
+  stateLine.setAttribute('role', 'status')
+  const counters = el('div', 'watch-counters')
+  const counterValues = ([['pending', '待传'], ['uploaded', '已传'], ['failed', '失败']] as const).map(([key, label]) => {
+    const block = el('div', 'watch-counter')
+    const value = el('b', undefined, '0')
+    block.append(value, el('span', undefined, label))
+    counters.append(block)
+    return { key, value }
+  })
   const counterLine = el('p', 'muted')
   const statusNote = el('p', 'hint-text')
 
@@ -210,14 +217,27 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   scanButton.addEventListener('click', () => void send({ type: 'WATCH_TICK' }))
   retryButton.addEventListener('click', () => void retryFailed())
   clearButton.addEventListener('click', () => void clearLedger())
+  const recoveryButton = el('button', 'button', '选择目录') as HTMLButtonElement
+  recoveryButton.type = 'button'
+  recoveryButton.addEventListener('click', () => {
+    if (!handle) void pickDirectory()
+    else if (settings.state === 'waiting-login' && permission === 'granted')
+      void chrome.tabs.create({ url: 'https://openms.top/' })
+    else void startWatching()
+  })
+  const changeDirButton = el('button', 'button', '选择目录') as HTMLButtonElement
+  changeDirButton.type = 'button'
+  changeDirButton.addEventListener('click', () => void pickDirectory())
 
-  actions.append(startButton, pauseButton, scanButton, retryButton, clearButton)
-  runCard.append(stateLine, counterLine, statusNote, actions)
+  actions.append(startButton, pauseButton, scanButton, retryButton, recoveryButton, changeDirButton)
+  const ledgerActions = el('div', 'watch-ledger')
+  ledgerActions.append(clearButton, el('span', 'muted', '清空后，已有录像会被当成新文件重新上传。'))
+  runCard.append(stateLine, counters, counterLine, statusNote, actions, ledgerActions)
 
   // ---------------- 什么时候会停 ----------------
-  const rulesCard = el('section', 'card rules')
+  const rulesCard = el('details', 'card rules')
+  rulesCard.append(el('summary', undefined, '使用说明 · 什么时候会停'))
   rulesCard.append(
-    el('h2', undefined, '什么时候会停'),
     el('p', 'desc', '监视开着时，下面这些操作不会中断它，可以放心关。'),
   )
 
@@ -282,9 +302,9 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   }
 
   // ---------------- 诊断 ----------------
-  const diagCard = el('section', 'card')
+  const diagCard = el('details', 'card watch-diagnostics')
   diagCard.append(
-    el('h2', undefined, '诊断'),
+    el('summary', undefined, '诊断 · 后台与目录扫描'),
     el('p', 'desc', '监视没反应时先看这里：后台有没有起来、目录里到底看见什么。'),
   )
   const diagBackend = el('p', 'muted', '后台：检测中…')
@@ -320,7 +340,8 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
     footer.append(externalLink(`${item.label} ↗`, item.url), document.createTextNode(' '))
   }
 
-  page.append(header, dirCard, settingsCard, runCard, rulesCard, diagCard, logCard, footer)
+  let configuredLayout: boolean | undefined
+  page.append(header, dirCard, settingsCard, runCard, logCard, rulesCard, diagCard, footer)
   root.append(page)
 
   render()
@@ -342,15 +363,20 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
       pickButton.focus()
     } else if (reason === 'permission') {
       notice('目录读取权限没有授予，请重新选择目录或点「重新授权」。')
+      recoveryButton.focus()
     } else if (reason === 'error') {
       notice('上次启动失败，请重试或查看日志。')
+      startButton.focus()
     }
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
     void (async () => {
-      if (changes.uploadWatch) settings = await getWatchSettings()
+      if (changes.uploadWatch) {
+        settings = await getWatchSettings()
+        await refreshPermission()
+      }
       if (changes.uploadWatchStatus) {
         status = await getWatchStatus()
         void refreshDiag()
@@ -359,15 +385,20 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
       render()
     })()
   })
+  window.addEventListener('focus', () => {
+    void refreshPermission().then(render)
+  })
 
   // ---------------- 行为 ----------------
 
   async function refreshPermission(): Promise<void> {
-    if (!handle) {
-      permission = 'prompt'
-      return
-    }
-    permission = await queryPermission(handle)
+    // 其他上传页也可能更换目录或授予权限，不能只查询挂载时保存的句柄。
+    const request = ++permissionRequest
+    const nextHandle = await getWatchHandle()
+    const nextPermission = nextHandle ? await queryPermission(nextHandle) : 'prompt'
+    if (request !== permissionRequest) return
+    handle = nextHandle
+    permission = nextPermission
   }
 
   async function pickDirectory(): Promise<void> {
@@ -513,8 +544,22 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   }
 
   function render(): void {
+    const configured = !!handle || !!settings.dirName
+    const watching = settings.state === 'watching'
+    const needsLogin = settings.state === 'waiting-login'
+    const needsPermission = !!handle && (settings.state === 'needs-permission' || permission !== 'granted')
+    if (configuredLayout !== configured) {
+      // 仅在配置状态变化时移动原节点，常规扫描和日志更新不重排卡片。
+      const focused = document.activeElement as HTMLElement | null
+      const cards = configured
+        ? [runCard, logCard, dirCard, settingsCard]
+        : [dirCard, settingsCard, runCard, logCard]
+      for (const card of cards) page.insertBefore(card, rulesCard)
+      if (focused && page.contains(focused)) focused.focus({ preventScroll: true })
+      configuredLayout = configured
+    }
     dirValue.textContent = settings.dirName || '未选择'
-    pickButton.disabled = settings.state === 'watching'
+    pickButton.disabled = watching
 
     if (!handle) permNote.textContent = '还没有选择目录。选择后浏览器会询问一次读取权限。'
     else if (permission === 'granted') permNote.textContent = '目录读取权限已授予。'
@@ -524,34 +569,51 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
 
     for (const [value, input] of Object.entries(modeInputs)) {
       input.checked = settings.mode === value
-      input.disabled = settings.state === 'watching'
+      input.disabled = watching
     }
-    intervalInput.disabled = settings.state === 'watching'
-    recursiveInput.disabled = settings.state === 'watching'
-    failInput.disabled = settings.state === 'watching'
+    intervalInput.disabled = watching
+    recursiveInput.disabled = watching
+    failInput.disabled = watching
 
-    const scanTime = status.lastScanAt
-      ? new Date(status.lastScanAt).toLocaleTimeString('zh-CN', { hour12: false })
-      : ''
-    stateLine.textContent = `状态：${STATE_LABEL[settings.state]}${settings.dirName ? ` · ${settings.dirName}` : ''}${scanTime ? ` · 上次扫描 ${scanTime}` : ''}`
+    stateLine.textContent = STATE_LABEL[settings.state]
+    stateLine.dataset.state = settings.state
+    for (const { key, value } of counterValues) {
+      value.textContent = String(status[key])
+      value.classList.toggle('has-failures', key === 'failed' && status.failed > 0)
+    }
     const scanInfo = status.lastScanAt
       ? `目录 ${status.totalFiles} 个文件 · 命中 ${status.matchedFiles}`
       : '尚未扫描'
-    counterLine.textContent = `${scanInfo} · 待传 ${status.pending} · 已传 ${status.uploaded} · 跳过 ${status.skipped} · 失败 ${status.failed}`
+    counterLine.textContent = `${settings.dirName || '未选择目录'} · ${status.lastScanAt ? `上次扫描 ${formatDateTime(status.lastScanAt)} · ${scanInfo}` : scanInfo} · 跳过 ${status.skipped}`
     if (flash) statusNote.textContent = flash
+    else if (settings.state === 'stopped')
+      statusNote.textContent = `${settings.lastError || '监视已停止'}。处理停止原因后，点击「开始监视」恢复。`
+    else if (needsLogin)
+      statusNote.textContent = '请在 openms.top 重新登录，登录后自动继续监视。'
+    else if (!handle) statusNote.textContent = '请先选择录像目录，再开始监视。'
+    else if (needsPermission)
+      statusNote.textContent = '目录读取权限需要重新授予，请点「重新授权」或选择目录。'
     else if (settings.lastError) statusNote.textContent = settings.lastError
     else if (status.message) statusNote.textContent = status.message
     else if (status.lastScanAt && status.matchedFiles === 0 && status.totalFiles > 0)
       statusNote.textContent = `目录里有 ${status.totalFiles} 个文件，但没有扩展名匹配（当前 ${settings.exts.join(' / ')}）。`
     else if (status.lastScanAt && status.matchedFiles === 0 && status.subdirs > 0)
       statusNote.textContent = `文件都在子目录里，勾选「包含子目录」。`
-    else statusNote.textContent = status.lastScanAt
-      ? `上次扫描：${formatDateTime(status.lastScanAt)}`
-      : '还没有扫描过。'
+    else statusNote.textContent = ''
+    statusNote.classList.toggle('hidden', !statusNote.textContent)
+    recoveryButton.textContent = !handle ? '选择目录' : needsPermission ? '重新授权' : '去登录'
+    recoveryButton.classList.toggle('hidden', !!handle && !needsPermission && !needsLogin)
+    recoveryButton.disabled = watching
+    changeDirButton.classList.toggle('hidden', !needsPermission)
+    changeDirButton.disabled = watching
+    const needsRecovery = !handle || needsPermission || needsLogin
+    recoveryButton.classList.toggle('primary', needsRecovery)
+    startButton.classList.toggle('primary', !watching && !needsRecovery)
+    pauseButton.classList.toggle('primary', watching)
 
-    startButton.disabled = settings.state === 'watching' || !handle
-    pauseButton.disabled = settings.state !== 'watching'
-    scanButton.disabled = settings.state !== 'watching'
+    startButton.disabled = watching || !handle
+    pauseButton.disabled = !watching
+    scanButton.disabled = !watching
     retryButton.disabled = status.failed === 0
     clearButton.disabled = settings.state === 'watching'
 
@@ -559,20 +621,35 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   }
 
   function renderLogs(): void {
+    const visibleLogs = logs.slice(0, 40)
+    const signature = JSON.stringify(visibleLogs)
+    if (signature === renderedLogs) return
+    renderedLogs = signature
+    const scrollTop = logList.scrollTop
+    const top = logList.getBoundingClientRect().top
+    const anchor = scrollTop > 0
+      ? Array.from(logList.children).find((row) => row.getBoundingClientRect().bottom > top)
+      : undefined
+    const anchorKey = (anchor as HTMLElement | undefined)?.dataset.logKey
+    const anchorOffset = anchor ? anchor.getBoundingClientRect().top - top : 0
     logList.replaceChildren()
     if (logs.length === 0) {
       logList.append(el('p', 'empty-logs', '暂无记录'))
       return
     }
-    for (const entry of logs.slice(0, 40)) {
+    for (const entry of visibleLogs) {
       const row = el('div', 'log-entry')
+      row.dataset.logKey = JSON.stringify(entry)
       row.append(el('span', 'log-time', new Date(entry.at).toLocaleTimeString('zh-CN', { hour12: false })))
-      const level =
-        entry.kind === 'err' ? 'log-level error' : entry.kind === 'warn' ? 'log-level warn' : 'log-level info'
-      row.append(el('span', level, entry.kind === 'err' ? '失败' : entry.kind === 'warn' ? '重试' : '记录'))
+      row.append(el('span', `log-level watch-log-${entry.kind}`, LOG_LABEL[entry.kind]))
       row.append(el('span', 'log-message', entry.text))
       logList.append(row)
     }
+    logList.scrollTop = scrollTop
+    const restored = anchorKey
+      ? Array.from(logList.children).find((row) => (row as HTMLElement).dataset.logKey === anchorKey)
+      : undefined
+    if (restored) logList.scrollTop += restored.getBoundingClientRect().top - top - anchorOffset
   }
 }
 
