@@ -500,11 +500,6 @@ body {
   white-space: nowrap;
 }
 
-.gc-table {
-  width: auto;
-  min-width: min(100%, 480px);
-}
-
 .gc-table :is(td, th) {
   white-space: nowrap;
 }
