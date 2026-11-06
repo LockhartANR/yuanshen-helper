@@ -262,9 +262,20 @@ src/
 │       ├── analysis-state.ts     # 筛选、日期草稿、页签与快照类型
 │       ├── analysis-controller.ts # 状态操作、参数保存与锚点异步编排
 │       ├── analysis-data.ts      # 各统计数据集、梁山分派生与缓存
+│       ├── analysis-tab-data.ts  # 按当前页签聚合展示数据与复制文本
 │       ├── gc-coefficients.ts    # GC 战力系数（从工作簿提取）
-│       ├── analysis-view.ts      # 工具栏、页签渲染与交互接线
-│       ├── ui/                   # 定阶 / 梁山分展示、时段 / 参数控件与编辑定位
+│       ├── analysis-view.ts      # 大表外壳、工具栏、事件转发与局部交互
+│       ├── player-state.ts       # 启动模式、来源 / 页面、成绩筛选与页面快照
+│       ├── player-controller.ts  # 网站请求、取消、未过审补抓、切源与 CSV session 编排
+│       ├── ui/
+│       │   ├── tabs/             # 八个大表页签及共用展示辅助
+│       │   ├── rating-view.ts    # 共用定阶总览
+│       │   ├── lsf-view.ts       # 梁山分统计、阶梯图与流水
+│       │   ├── settings-panel.ts # 参数面板
+│       │   ├── range-control.ts  # 时段选择与日期草稿控件
+│       │   ├── editor-focus.ts   # 编辑定位、吸顶与焦点恢复
+│       │   ├── score-view.ts     # PB 筛选、PB 表与前端 Top5
+│       │   └── csv-panel.ts      # CSV 关联清单、读取反馈与降级文件输入
 │       ├── api.ts                # 录像列表 / 明细分批请求、限流退避
 │       ├── colors.ts             # 原表色板与取色
 │       ├── csv.ts                # Arbiter / Anthropic stats CSV 解析
@@ -280,12 +291,14 @@ src/
 │       ├── software-icon.ts      # 软件图标
 │       ├── store.ts              # 玩家录像缓存读写
 │       ├── video-date.ts         # 共用有效日期与来源标记
-│       └── view.ts               # 玩家数据页 UI
+│       └── view.ts               # 玩家数据页入口、布局、订阅与销毁
 ├── shared/                       # 数据库连接、设置、日志、格式化、图标、玩家 ID、小工具
 ├── public/fonts/misans/          # MiSans 子集与 NOTICE
 └── styles/                       # 基础 / popup / options / upload / player 样式
 tests/                            # 单元 / 集成测试（全部使用合成数据）
 ```
+
+玩家页控制器管理网站与 CSV 的来源切换、请求失效和页面生命周期，大表控制器独立管理分析筛选、参数和锚点。两者通过带来源身份与内容版本的 `DatasetSnapshot` 连接，进度和消息变化不重建大表或成绩表格。CSV session 负责文件权限、整批读取、取消与版本提交；页签展示只读取当前派生数据，复制文本与预览使用同一份展示结果。
 
 图标源文件在 `assets/icon-source.webp`，可用以下命令重新生成：
 

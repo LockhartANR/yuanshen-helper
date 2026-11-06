@@ -276,7 +276,7 @@ describe('本地 CSV 关联清单', () => {
     handle.text = csv(5000, 6000)
     await startRefresh()
     await vi.waitFor(() => expect(updateAnalysis.mock.lastCall?.[0]).toHaveLength(2))
-    expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), { csv: true })
+    expect(updateAnalysis).toHaveBeenLastCalledWith(expect.any(Array), expect.objectContaining({ csv: true }))
     expect(byClass('csv-source-meta').textContent).toContain('已读取')
     expect(byClass('csv-source-delta').textContent).toBe('1 → 2 局')
     expect(statusText()).toContain('刷新完成')
@@ -438,7 +438,7 @@ describe('本地 CSV 关联清单', () => {
     gate.resolve(handle.file())
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(sourceNames()).toEqual([])
-    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], expect.objectContaining({ csv: true }))
   })
 
   it('添加读取期间切回网站，晚到读取不会自动切回 CSV', async () => {
@@ -597,7 +597,7 @@ describe('本地 CSV 关联清单', () => {
     expect(byClass('csv-sources-note').textContent).toContain('已关联 1 个文件')
     expect(byClass('csv-sources-note').textContent).toContain('点击「刷新」加载成绩')
     expect(handle.reads).toBe(1)
-    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], expect.objectContaining({ csv: true }))
   })
 })
 
@@ -613,7 +613,7 @@ describe('独立 CSV 与降级模式', () => {
     expect(byClass('page-tabs').visible()).toBe(false)
     expect(byClass('player-name').textContent).toBe('本地 CSV')
     expect(document.title).toBe('本地 CSV · 元神助手')
-    expect(updateAnalysis).toHaveBeenLastCalledWith([], { csv: true })
+    expect(updateAnalysis).toHaveBeenLastCalledWith([], expect.objectContaining({ csv: true }))
   })
 
   it('没有文件句柄 API 时回退到文件输入并提示无法记住', async () => {
@@ -696,6 +696,30 @@ describe('原有网站行为', () => {
     await Promise.resolve()
     expect(byClass('player-name').textContent).toBe('本地 CSV')
     expect(byClass('player-status').textContent).toBe('')
+  })
+
+  it('连续进度通知不重算或替换成绩节点，数据返回后才更新', async () => {
+    let refreshProgress: ((progress: { done: number; total: number }) => void) | undefined
+    const refresh = deferred<LoadedPlayer>()
+    await mount()
+    await vi.waitFor(() => expect(byClass('pb-count').visible()).toBe(true))
+    const pbNode = byClass('pb-cell')
+    const topNode = byClass('top5-cell')
+
+    vi.mocked(loadPlayer).mockImplementationOnce((_id, options) => {
+      refreshProgress = options?.onProgress
+      return refresh.promise
+    })
+    visibleButton('刷新').click()
+    expect(refreshProgress).toBeTypeOf('function')
+    refreshProgress!({ done: 1, total: 3 })
+    refreshProgress!({ done: 2, total: 3 })
+    expect(byClass('pb-cell')).toBe(pbNode)
+    expect(byClass('top5-cell')).toBe(topNode)
+
+    refresh.resolve(loaded())
+    await vi.waitFor(() => expect(byClass('pb-cell')).not.toBe(pbNode))
+    expect(byClass('top5-cell')).not.toBe(topNode)
   })
 
   it('启动参数错误时不挂载页面或请求数据', async () => {
