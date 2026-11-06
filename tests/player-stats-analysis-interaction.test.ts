@@ -402,6 +402,56 @@ describe('周 T37 复制', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('跨午夜后修改复制设置，表格与展开状态保留，旧周复制仍可用', async () => {
+    twoWeeks()
+    // 固定「今天」时段：跨午夜后它才会切到新一天；旧实现重取快照时表格与复制会脱节。
+    pick('today', 'global')
+    const host = openTrend()
+    expect(host.innerHTML).toContain('26/11/2 当周明细')
+    const weekRow = new TestElement('tr')
+    weekRow.dataset.weekRow = '1'
+    const detail = new TestElement('tr')
+    detail.className = 'week-detail hidden'
+    weekRow.nextElementSibling = detail
+    const toggle = new TestElement('button')
+    toggle.dataset.weekToggle = ''
+    toggle.textContent = '▸26/11/2'
+    weekRow.append(toggle)
+    host.emit('click', weekRow)
+    expect(detail.classList.contains('hidden')).toBe(false)
+
+    const before = host.innerHTML
+    vi.mocked(Date.now).mockReturnValue(NOW + 86_400_000)
+
+    const monthField = new TestElement('input')
+    monthField.dataset.copyScope = 'month'
+    monthField.dataset.copyField = 'medianTime'
+    monthField.checked = true
+    root.emit('change', monthField)
+    expect(host.innerHTML).toBe(before)
+    expect(detail.classList.contains('hidden')).toBe(false)
+
+    const yearField = new TestElement('input')
+    yearField.dataset.copyScope = 'year'
+    yearField.dataset.copyField = 'cls'
+    yearField.checked = true
+    root.emit('change', yearField)
+    expect(host.innerHTML).toBe(before)
+
+    const reset = new TestElement('button')
+    reset.dataset.copyReset = 'month'
+    host.emit('click', reset)
+    expect(host.innerHTML).toBe(before)
+
+    // 复制仍对应旧表格展示的周与统计日期，不跟着新时钟重算。
+    host.emit('click', weekButton(CURRENT_START))
+    await flush()
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const lines = (writeText.mock.calls[0]![0] as string).split('\n')
+    expect(lines[0]).toBe('周成绩 · 2026/11/02–2026/11/08（统计日期 2026/11/03–2026/11/03）')
+    expect(detail.classList.contains('hidden')).toBe(false)
+  })
+
   it('未知复制类型直接拒绝，不请求剪贴板', async () => {
     twoWeeks()
     const host = openTrend()

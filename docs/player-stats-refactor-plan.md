@@ -1,7 +1,7 @@
 # 玩家统计界面与状态编排分批重构方案
 
 - 编写日期：2026-11-05
-- 代码基线：`6457985`（第一批重构完成后，版本 1.3.1；方案初稿基于 `ece72de`，GC 修复在 `f49f990`）
+- 代码基线：`a2d199f`（第二批重构完成后，版本 1.3.1；方案初稿基于 `ece72de`，GC 修复在 `f49f990`，第一批在 `6457985`）
 - 实施进度：统一记录在第 9 节状态表
 - 自动检查基线：第一批提交 `6457985` 的 31 个测试文件、427 项测试及三份构建通过
 - 用户验收基线：第一批于 2026-11-05 完成真实浏览器验收，包含已随 `f49f990` 交付的 GC 表格全宽布局
@@ -17,7 +17,8 @@
 现有职责与口径以这些文件为依据：
 
 - [view.ts](../src/features/player-stats/view.ts)：页面启动、网站 / CSV 切换、PB 与前端成绩、加载和销毁。
-- [analysis-view.ts](../src/features/player-stats/analysis-view.ts)：大表状态、参数、锚点、缓存、八个页签及 DOM 交互。
+- [analysis-view.ts](../src/features/player-stats/analysis-view.ts)：大表外壳、工具栏、页签装配及 DOM 交互。
+- [analysis-controller.ts](../src/features/player-stats/analysis-controller.ts)、[analysis-data.ts](../src/features/player-stats/analysis-data.ts)、[analysis-tab-data.ts](../src/features/player-stats/analysis-tab-data.ts)：大表状态、参数与锚点编排、统计缓存及当前页签展示数据。
 - [csv-session.ts](../src/features/player-stats/csv-session.ts)：CSV 权限、读取、整批提交、取消与版本冲突。
 - [analysis.ts](../src/features/player-stats/analysis.ts)、[compute.ts](../src/features/player-stats/compute.ts)、[lsf-history.ts](../src/features/player-stats/lsf-history.ts)：现有统计计算。
 - [玩家数据说明](player-stats.md)：产品行为与统计口径。
@@ -28,7 +29,7 @@
 | --- | --- | --- | --- |
 | 1 | 提取独立展示组件与编辑定位 | 共用定阶展示、梁山分展示、参数面板、焦点与吸顶工具 | 搬代码和明确参数，保留现有状态编排 |
 | 2 | 提取大表控制器与派生数据 | 分析状态、操作方法、锚点与参数编排、统计缓存 | 大表视图不再直接管理业务状态和异步请求 |
-| 3 | 逐页迁移展示数据 | 八个页签视图、与当前展示一致的复制数据 | 每组页签单独提交，数据与渲染职责分开 |
+| 3 | 逐页迁移展示数据 | 八个页签视图、与当前展示一致的复制数据 | 八页签及其派生数据一并交付，数据与渲染职责分开 |
 | 4 | 提取页面数据源编排 | 玩家页面控制器、成绩展示、CSV 面板、薄页面入口 | 网站与 CSV 生命周期归属明确，保留现有 session |
 
 批次内可以拆成多个小提交。未完成当前批的自动检查和对应浏览器验收时，先完成当前批，再进入下一批。
@@ -45,6 +46,7 @@
 | `analysis-state.ts` | 大表状态类型、日期草稿与页签逻辑状态 |
 | `analysis-controller.ts` | 执行大表操作，管理参数与锚点异步任务，发布只读分析快照 |
 | `analysis-data.ts` | 调用现有计算函数，按明确依赖生成并缓存统计结果 |
+| `analysis-tab-data.ts` | 按当前页签生成展示数据及对应复制文本 |
 | `analysis-view.ts` | 大表外壳、工具栏和页签装配，将用户动作转交控制器 |
 | `ui/rating-view.ts`、`ui/lsf-view.ts` | 共用定阶 HTML、梁山分统计 / 图表 / 流水展示 |
 | `ui/settings-panel.ts`、`ui/range-control.ts` | 参数和日期控件的创建、回填、输入及动作通知 |
@@ -144,11 +146,11 @@ interface AnalysisController {
   selectTab(tab: AnalysisTab): void
   setFilters(patch: AnalysisFilterPatch): void
   beginRangeEdit(owner: 'global' | 'lsf'): void
-  setRangeDraft(draft: CustomRange): void
+  setRangeDraft(draft: Partial<CustomRange>): void
   applyRange(): CustomValidation
   cancelRangeEdit(): void
   updateSettings(patch: AnalysisSettingsPatch): void
-  refreshSiteAnchors(): Promise<void>
+  refreshSiteAnchors(force?: boolean): Promise<boolean>
   destroy(): void
 }
 ```
@@ -184,7 +186,7 @@ interface AnalysisController {
 
 ### 范围与步骤
 
-按依赖分三组迁移，每组形成独立提交：
+页签按以下三组组织，展示数据与渲染作为第三批统一交付：
 
 1. 概览、趋势：迁出 `overviewHtml()`、`trendHtml()`，先明确今日、近期指标、周月年统计与复制数据的归属。
 2. 梁山分：连接第一批的展示函数，整理完整历史、时段结果与展开 / 定位状态的展示数据。
@@ -192,18 +194,18 @@ interface AnalysisController {
 
 每个页签接收明确类型的展示数据。派生层只聚合当前页签实际需要的内容，避免每次状态变化计算八个页签。
 
-以趋势为例，一份展示数据同时包含周汇总、三级槽位、总计 / 平均、PPP 摘要和对应复制文本。`trend-copy.ts` 继续负责格式化；渲染过程不再修改 `trendWeekCopies`、`trendMonths`、`trendYears` 等隐藏缓存。
+趋势展示数据同时包含周汇总、三级槽位、总计 / 平均、PPP 摘要和对应复制文本。`trend-copy.ts` 负责格式化，预览复用已生成的复制文本；渲染不修改统计缓存，修改复制字段只基于当前展示数据局部更新。
 
 复制事件按周期键与当前展示快照回查。今日复制也读取对应展示结果，避免点击时按另一套筛选或时钟重新统计。复制反馈和相关计时器留在视图中。
 
 ### 验收
 
-- [ ] 各页签不直接读取 localStorage、执行网络请求或重建历史。
-- [ ] 同一组数据、参数、日期与时钟下，关键统计值和周 / 月 / 年 / 今日复制文本与基线一致。
-- [ ] 复制不改变展开状态，切源或重绘后的旧按钮反馈不会回写新视图。
-- [ ] 选中难度、指标、月份、布局等跨切页状态符合既有行为；数据更新只清理应失效的部分。
-- [ ] 八个页签在桌面 / 窄屏、浅色 / 深色及嵌入模式下无展示回归。
-- [ ] 第一、二批保留的交互与缓存测试继续通过，不用整页 HTML 快照替代行为断言。
+- [x] 各页签不直接读取 localStorage、执行网络请求或重建历史。
+- [x] 同一组数据、参数、日期与时钟下，关键统计值和周 / 月 / 年 / 今日复制文本与基线一致。
+- [x] 复制不改变展开状态，切源或重绘后的旧按钮反馈不会回写新视图。
+- [x] 选中难度、指标、月份、布局等跨切页状态符合既有行为；数据更新只清理应失效的部分。
+- [x] 八个页签在桌面 / 窄屏、浅色 / 深色及嵌入模式下无展示回归（用户于 2026-11-06 确认真实浏览器抽查验收完成）。
+- [x] 第一、二批保留的交互与缓存测试继续通过，不用整页 HTML 快照替代行为断言。
 
 ## 8. 第四批：页面数据源编排
 
@@ -247,7 +249,7 @@ git diff --check
 | --- | --- | --- |
 | 1：展示与定位 | 已完成并验收 | 类型检查、31 个测试文件 / 427 项测试、三份构建及 `git diff --check` 通过；用户确认真实浏览器验收完成；随本批提交交付 |
 | 2：状态与派生 | 已完成并验收 | 类型检查、32 个测试文件 / 447 项测试、三份构建及 `git diff --check` 通过；用户确认本批真实浏览器抽查完成；随本批提交交付 |
-| 3：页签展示 | 未开始 | — |
+| 3：页签展示 | 已完成并验收 | `npm run verify` 通过（tsc、33 个测试文件 / 451 项测试、三份生产构建）；`git diff --check` 通过；用户确认真实浏览器抽查验收完成；随本批提交交付 |
 | 4：数据源编排 | 未开始 | — |
 
 ### 第一批交付记录
@@ -258,7 +260,6 @@ git diff --check
 - 共用能力：难度文案使用 `model.ts` 的 `LEVEL_LABELS`，HTML 文本转义使用 `shared/ui.ts` 的 `escapeHtml()`。
 - 自动验证：类型检查、31 个测试文件 / 427 项测试、三份构建与 `git diff --check` 通过。组件和交互测试覆盖帧取消、焦点与监听清理、参数校验 / 回填及修改 3BV 下限后的重筛和保存。
 - 浏览器验收：用户于 2026-11-05 确认本批真实浏览器验收完成，独立页、嵌入页、窄屏及浅色 / 深色检查项已关闭。
-- 后续：日期控件的 DOM 回填与动作通知、大表状态及数据源编排按第二至四批继续迁移。
 
 ### 第二批交付记录
 
@@ -269,6 +270,14 @@ git diff --check
 - 回归覆盖：保留日期两端连续编辑、切页与锚点异步返回、旧请求失效、数据切换、计算口径及缓存边界测试；身份参数通过真实的公开接口调用进行类型检查。
 - 自动验证：类型检查、32 个测试文件 / 447 项测试、三份构建与 `git diff --check` 通过。
 - 浏览器验收：用户于 2026-11-06 确认本批真实浏览器抽查完成。
-- 后续：页签 HTML 留待第三批拆分，页面数据源及真实来源身份留待第四批接入。
+
+### 第三批交付记录
+
+- 基线：第三批以 `a2d199f`（第二批重构完成）为起点。
+- 职责拆分：`analysis-tab-data.ts` 只聚合当前页签；八个页签的 HTML 归入 `ui/tabs/*.ts`，共用格式化、颜色与录像链接归入 `common.ts`；`analysis-view.ts` 保留外壳、工具栏、事件转发与局部交互。
+- 展示快照：今日、周、月、年复制按周期键回查当前展示结果；月 / 年预览复用复制文本，修改字段只更新复制内容。周复制文本只保留一份，梁山分明细与定位直接回查当前页签数据。
+- 回归覆盖：八页签渲染与存储 / 网络隔离合并验证；保留复制等价性、字段更新复用统计，以及固定「今天」时段跨午夜后修改月 / 年选项、恢复默认和复制原统计日期的交互回归。自动验证结果见上表。
+- 浏览器验收：用户于 2026-11-06 确认八个页签的桌面 / 窄屏、浅色 / 深色及嵌入模式真实浏览器抽查验收完成。
+- 提交与后续：第三批随本次提交交付；页面数据源编排与真实来源身份留待第四批。本计划保留至四批完成。
 
 四批完成后，将稳定职责更新到 README 项目结构；产品行为说明继续维护在 `docs/player-stats.md`。清除已完成 TODO 和过时迁移说明，本计划及其入口也随整理移除；不把开发方案记作已实现功能或发布记录。
