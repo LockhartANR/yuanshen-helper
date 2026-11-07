@@ -33,6 +33,20 @@ function trendCopyCell(
     '</td>'
 }
 
+function weekJumpCell(start: number): string {
+  const label = `查看 ${formatShortDate(start)} 当周录像`
+  return '<td class="exclusion-jump-cell">' +
+    `<button type="button" class="button small exclusion-jump-button" data-exclusion-week="${start}" aria-label="${label}" title="${label}">查看录像</button>` +
+    '</td>'
+}
+
+function monthJumpCell(key: string, level: TrendTabData['monthLevel']): string {
+  const label = `查看 ${key} ${LEVEL_LABELS[level]}录像`
+  return '<td class="exclusion-jump-cell">' +
+    `<button type="button" class="button small exclusion-jump-button" data-exclusion-month="${key}" data-exclusion-level="${level}" aria-label="${label}" title="${label}">查看录像</button>` +
+    '</td>'
+}
+
 /** 周复制按钮的可访问名称带完整周一至周日日期；没有成绩的周不渲染按钮。 */
 function weekCopyCell(start: number): string {
   const label = `复制 ${formatCopyWeek(start).replace('–', ' 至 ')} 周成绩`
@@ -128,7 +142,7 @@ function weekRows(data: TrendTabData): string {
         )
       }
       const detail =
-        `<tr id="week-detail-${week.start}" class="week-detail hidden"><td colspan="8"><h3 class="week-detail-title">${formatShortDate(week.start)} 当周明细</h3><div class="week-level-grid">` +
+        `<tr id="week-detail-${week.start}" class="week-detail hidden"><td colspan="9"><h3 class="week-detail-title">${formatShortDate(week.start)} 当周明细</h3><div class="week-level-grid">` +
         `<div class="week-level-column">${levelBlock('b')}</div>` +
         `<div class="week-level-column">${levelBlock('i')}${levelBlock('e')}</div>` +
         '</div>' +
@@ -151,6 +165,7 @@ function weekRows(data: TrendTabData): string {
         `<td class="num">${week.ppp.toFixed(3)}</td>` +
         `<td class="num ${weekDeltaClass(delta)}">${formatWeekDelta(delta)}</td>` +
         weekCopyCell(week.start) +
+        weekJumpCell(week.start) +
         '</tr>' +
         detail
       )
@@ -171,6 +186,7 @@ function monthRows(data: TrendTabData): string {
           '<td class="num">0</td>' +
           '<td class="num" colspan="17" style="text-align:left">—</td>' +
           copyCell +
+          monthJumpCell(month.key, level) +
           '</tr>'
         )
       }
@@ -206,7 +222,7 @@ function monthRows(data: TrendTabData): string {
         '</div></div>'
 
       const detail =
-        '<tr class="month-detail hidden"><td colspan="21">' +
+        '<tr class="month-detail hidden"><td colspan="22">' +
         (month.hasScores
           ? '<div class="month-tier-grid">' +
             tierBlock('用时分档', MONTH_TIME_TIERS[level], month.timeTierShare) +
@@ -222,6 +238,7 @@ function monthRows(data: TrendTabData): string {
         `<td class="num">${month.count}</td>` +
         statsCells +
         copyCell +
+        monthJumpCell(month.key, level) +
         '</tr>' +
         detail
       )
@@ -293,8 +310,8 @@ export function renderTrendTab(data: TrendTabData): string {
     '<div class="card-head"><h2 class="card-title">周 T37</h2><span class="muted">按参数槽位取用时 / 3BVS / STNB · T37 越小越好 · 点周行展开三级明细</span></div>' +
     '<div class="table-scroll">' +
     '<table class="data-table week-table">' +
-    '<thead><tr><th>周起始</th><th class="num">局数</th><th class="num">T37</th><th class="num">B37</th><th class="num">S37</th><th class="num">ppp</th><th class="num">ΔT37</th><th class="copy-cell"></th></tr></thead>' +
-    `<tbody>${weeks || '<tr><td colspan="8" class="muted">没有数据</td></tr>'}</tbody>` +
+    '<thead><tr><th>周起始</th><th class="num">局数</th><th class="num">T37</th><th class="num">B37</th><th class="num">S37</th><th class="num">ppp</th><th class="num">ΔT37</th><th class="copy-cell"></th><th class="exclusion-jump-cell"></th></tr></thead>' +
+    `<tbody>${weeks || '<tr><td colspan="9" class="muted">没有数据</td></tr>'}</tbody>` +
     '</table>' +
     '</div>' +
     '</div>' +
@@ -312,7 +329,7 @@ export function renderTrendTab(data: TrendTabData): string {
     '<th colspan="2" class="group">转化</th>' +
     '<th colspan="2" class="group">路径</th>' +
     '<th colspan="3" class="group">头部</th>' +
-    '<th class="copy-cell"></th>' +
+    '<th class="copy-cell"></th><th class="exclusion-jump-cell"></th>' +
     '</tr><tr>' +
     '<th class="num">用时</th><th class="num">中位</th><th class="num">3BV</th><th class="num">3BVS</th><th class="num">STNB</th>' +
     '<th class="num">op</th><th class="num">is</th>' +
@@ -320,9 +337,9 @@ export function renderTrendTab(data: TrendTabData): string {
     '<th class="num">corr</th><th class="num">thrp</th>' +
     '<th class="num">格</th><th class="num">移速</th>' +
     '<th class="num">1/破率</th><th class="num">头部</th><th class="num">新 PB</th>' +
-    '<th class="copy-cell"></th>' +
+    '<th class="copy-cell"></th><th class="exclusion-jump-cell"></th>' +
     '</tr></thead>' +
-    `<tbody>${monthRows(data) || '<tr><td colspan="21" class="muted">没有数据</td></tr>'}</tbody>` +
+    `<tbody>${monthRows(data) || '<tr><td colspan="22" class="muted">没有数据</td></tr>'}</tbody>` +
     '</table>' +
     '</div>' +
     '</div>' +

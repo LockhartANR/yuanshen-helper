@@ -10,7 +10,9 @@ import { createPlayerController } from './player-controller'
 import { launchMode } from './player-state'
 import type { PlayerSnapshot } from './player-state'
 import { createCsvPanel } from './ui/csv-panel'
+import { createExclusionPanel } from './ui/exclusion-panel'
 import { createScoreView } from './ui/score-view'
+import type { ExclusionCandidateScope } from './statistics-exclusion-candidates'
 
 export interface PlayerStatsMountOptions {
   /** 页面是否运行在外部 iframe 中；外部 iframe 只允许 embed 模式启动。 */
@@ -36,7 +38,11 @@ export async function mountPlayerStats(
   const { standaloneCsv, embedded, siteUserId } = launchMode(launch)
   configureColors(loadAnalysisSettings().colorThresholds)
 
-  const analysis = createAnalysisView({ autoSiteAnchors: !standaloneCsv })
+  let openRecordings: (scope: ExclusionCandidateScope) => void = () => {}
+  const analysis = createAnalysisView({
+    autoSiteAnchors: !standaloneCsv,
+    onViewRecordings: (scope) => openRecordings(scope),
+  })
   const analysisPane = el('div', 'player-pane hidden')
   analysisPane.append(analysis.root)
 
@@ -55,7 +61,29 @@ export async function mountPlayerStats(
     onCancel: () => controller.cancelCsv(),
     onGrant: (sourceId) => void controller.grantCsv(sourceId),
   })
-  controller = createPlayerController({ launch, requestFiles: csvPanel.requestFiles })
+  controller = createPlayerController({
+    launch,
+    requestFiles: csvPanel.requestFiles,
+    confirmRelink: (choice) => csvPanel.confirmRelink(choice),
+  })
+  const exclusionPanel = createExclusionPanel({
+    onExclude: (keys, snapshotKey) => controller.excludeEntries(keys, snapshotKey),
+    onRestore: (keys, snapshotKey) => controller.restoreEntries(keys, snapshotKey),
+    onClearRules: (ruleIds, snapshotKey) =>
+      controller.clearExclusionRules(ruleIds, snapshotKey),
+    onLinkHistory: (sourceId, scopeId, snapshotKey) =>
+      controller.linkCsvHistory(sourceId, scopeId, snapshotKey),
+    onRetry: () => controller.retryExclusions(),
+    getDefaultFloors: () =>
+      typeof analysis.getBvFloors === 'function'
+        ? analysis.getBvFloors()
+        : { b: 10, i: 30, e: 100 },
+    getAppliedScope: () =>
+      typeof analysis.getAppliedScope === 'function'
+        ? analysis.getAppliedScope()
+        : null,
+  })
+  openRecordings = (scope) => exclusionPanel.open(scope)
 
   // ---- 头部 ----
   const nameNode = el('h1', 'player-name', siteUserId === null ? '本地 CSV' : `#${siteUserId}`)
@@ -92,7 +120,7 @@ export async function mountPlayerStats(
   const headerActions = el('div', 'player-actions')
   if (homeLink) headerActions.append(homeLink)
   if (selfButton) headerActions.append(selfButton)
-  headerActions.append(refreshButton, cancelButton)
+  headerActions.append(exclusionPanel.trigger, refreshButton, cancelButton)
   header.append(headerText, headerActions)
 
   const status = el('p', 'player-status')
@@ -122,6 +150,7 @@ export async function mountPlayerStats(
     csvPanel.feedback,
     status,
     pageTabs,
+    exclusionPanel.root,
     scorePane,
     analysisPane,
   )
@@ -132,7 +161,8 @@ export async function mountPlayerStats(
   function render(snapshot: PlayerSnapshot = controller.getSnapshot()): void {
     const dataset = snapshot.dataset
     const key = `${dataset.source}|${dataset.identity}|${dataset.contentVersion}`
-    if (key !== lastDatasetKey) {
+    // 规则读取失败时不向大表发布空规则统计；重试成功后再建立数据快照。
+    if (key !== lastDatasetKey && snapshot.exclusion.ready) {
       lastDatasetKey = key
       analysis.update(dataset.videos, {
         csv: dataset.source === 'csv',
@@ -160,13 +190,22 @@ export async function mountPlayerStats(
       const parts = session.hasSnapshot()
         ? [
             `CSV ${records.length} 个文件`,
-            `录像 ${formatCount(snapshot.videos.length)}`,
+            `统计 ${formatCount(snapshot.videos.length)} 局`,
+            ...(snapshot.exclusion.excludedCount > 0
+              ? [`已排除 ${formatCount(snapshot.exclusion.excludedCount)} 局`]
+              : []),
             `上次读取 ${formatDateTime(Math.max(0, ...records.map((record) => session.sourceSummary(record.sourceId)?.readAt ?? 0)))}`,
           ]
         : [`已关联 ${records.length} 个文件`, '尚未加载成绩']
       metaNode.textContent = parts.join(' · ')
     } else {
       const parts = [`录像 ${formatCount(snapshot.rows.length)}`]
+      if (snapshot.exclusion.excludedCount > 0) {
+        parts.push(
+          `统计 ${formatCount(snapshot.videos.length)} 局`,
+          `已排除 ${formatCount(snapshot.exclusion.excludedCount)} 局`,
+        )
+      }
       if (snapshot.updatedAt > 0) parts.push(`更新于 ${formatDateTime(snapshot.updatedAt)}`)
       if (snapshot.fromCache) parts.push('（缓存）')
       metaNode.textContent = parts.join(' · ')
@@ -175,8 +214,13 @@ export async function mountPlayerStats(
     refreshButton.disabled = snapshot.loading || csv
     refreshButton.classList.toggle('hidden', standaloneCsv || csv)
     cancelButton.classList.toggle('hidden', !snapshot.loading || csv)
-    status.textContent = snapshot.message
-    status.classList.toggle('hidden', csv || (!snapshot.loading && !snapshot.message))
+    const exclusionError = snapshot.exclusion.error
+    status.textContent = exclusionError || snapshot.message
+    status.classList.toggle(
+      'hidden',
+      (csv && !exclusionError) ||
+        (!exclusionError && !snapshot.loading && !snapshot.message),
+    )
     homeLink?.classList.toggle('hidden', embedded)
     selfButton?.classList.toggle('hidden', embedded)
 
@@ -184,12 +228,20 @@ export async function mountPlayerStats(
     analysisTab.classList.toggle('active', snapshot.page === 'analysis')
     scoreTab.setAttribute('aria-pressed', String(snapshot.page === 'score'))
     analysisTab.setAttribute('aria-pressed', String(snapshot.page === 'analysis'))
-    pageTabs.classList.toggle('hidden', embedded || empty || waiting)
-    scorePane.classList.toggle('hidden', !hasSnapshot || snapshot.page !== 'score')
-    analysisPane.classList.toggle('hidden', !hasSnapshot || snapshot.page !== 'analysis')
+    const exclusionReady = snapshot.exclusion.ready
+    pageTabs.classList.toggle('hidden', embedded || empty || waiting || !exclusionReady)
+    scorePane.classList.toggle(
+      'hidden',
+      !hasSnapshot || !exclusionReady || snapshot.page !== 'score',
+    )
+    analysisPane.classList.toggle(
+      'hidden',
+      !hasSnapshot || !exclusionReady || snapshot.page !== 'analysis',
+    )
 
     scoreView.render(snapshot)
     csvPanel.render(snapshot, session)
+    exclusionPanel.render(snapshot)
   }
 
   scoreTab.addEventListener('click', () => controller.setPage('score'))
@@ -233,7 +285,10 @@ export async function mountPlayerStats(
   const unsubscribe = controller.subscribe(render)
 
   // 控制器按启动模式恢复 CSV 清单或加载网站数据。
-  const checkRegistryOnFocus = (): void => void controller.checkCsvRegistry()
+  const checkRegistryOnFocus = (): void => {
+    void controller.checkCsvRegistry()
+    void controller.refreshExclusions()
+  }
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('focus', checkRegistryOnFocus)
   }
@@ -254,6 +309,7 @@ export async function mountPlayerStats(
       // 先撤销订阅，避免销毁过程中产生新的渲染。
       unsubscribe()
       controller.destroy()
+      exclusionPanel.destroy()
       if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
         window.removeEventListener('focus', checkRegistryOnFocus)
       }

@@ -47,8 +47,16 @@ export interface CsvError {
   message: string
 }
 
+/** 成功解析的一条记录：转换后的成绩和去除引号后的 31 列。 */
+export interface CsvRecord {
+  video: Video
+  /** 去首尾空白、字段内换行统一为 LF，供排除规则生成稳定身份。 */
+  canonicalRow: string[]
+}
+
 export interface CsvParseResult {
   videos: Video[]
+  records: CsvRecord[]
   errors: CsvError[]
   total: number
 }
@@ -167,6 +175,7 @@ export function parseStatsCsv(text: string, idBase = 0): CsvParseResult {
   }
 
   const videos: Video[] = []
+  const records: CsvRecord[] = []
   const errors: CsvError[] = []
   for (let index = 1; index < rows.length; index += 1) {
     const { fields: row, line } = rows[index]!
@@ -201,7 +210,7 @@ export function parseStatsCsv(text: string, idBase = 0): CsvParseResult {
       errors.push({ line, message: `未知 style：${row[10] ?? ''}` })
       continue
     }
-    videos.push({
+    const video: Video = {
       id: -(idBase + videos.length + 1),
       importOrder: idBase + videos.length,
       csvNf: style === 'NF',
@@ -223,8 +232,13 @@ export function parseStatsCsv(text: string, idBase = 0): CsvParseResult {
       path: number(row[28]),
       op: int(row[26]),
       isl: int(row[27]),
+    }
+    videos.push(video)
+    records.push({
+      video,
+      canonicalRow: row.map((value) => value.trim().replace(/\r\n?/g, '\n')),
     })
   }
 
-  return { videos, errors, total: Math.max(0, rows.length - 1) }
+  return { videos, records, errors, total: Math.max(0, rows.length - 1) }
 }

@@ -150,7 +150,6 @@ export function renderOverviewTab(data: OverviewTabData): string {
     '<thead><tr><th>难度</th><th class="num">总局数</th><th class="num">Best Time</th><th class="num">Best 3BVS</th><th class="num">Best STNB</th><th class="num">Avg Time</th><th class="num">Avg 3BVS</th><th class="num">Avg STNB</th><th class="num">Avg 3BV</th><th class="copy-cell"></th></tr></thead>' +
     `<tbody>${todayRows}</tbody>` +
     '</table></div>' : '<p class="today-empty">今日暂无成绩</p>') +
-    '<p class="today-scope">按当前数据源的基础有效记录统计，不受公共筛选与统计 3BV 下限影响。</p>' +
     '</div>' +
 
     '<div class="card">' +
@@ -190,7 +189,7 @@ export function renderOverviewTab(data: OverviewTabData): string {
           cell.count === 0
             ? ''
             : ` style="background:color-mix(in srgb, var(--accent) ${alpha}%, transparent)"`
-        return `<span class="cal-cell"${style} title="${formatShortDate(cell.start)} · ${cell.count} 局"></span>`
+        return `<button type="button" class="cal-cell"${style} data-exclusion-day="${cell.start}" title="${formatShortDate(cell.start)} · ${cell.count} 局 · 查看录像" aria-label="${formatShortDate(cell.start)}，${cell.count} 局，查看录像"></button>`
       })
       .join('')}</div>` +
     '</div>' +

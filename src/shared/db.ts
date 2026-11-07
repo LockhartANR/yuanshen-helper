@@ -3,6 +3,7 @@ import type { IdentifierItem } from '../features/user-search/api'
 import type { UserRecord } from '../features/user-search/model'
 import type { CsvSourceRegistry } from '../features/player-stats/csv-sources'
 import type { VideoDetail } from '../features/player-stats/model'
+import type { ExclusionScopeRecord } from '../features/player-stats/statistics-exclusion'
 import type { WatchFile } from '../features/upload-watch/types'
 
 export type SyncPhase = 'idle' | 'listing' | 'fetching' | 'paused'
@@ -84,10 +85,14 @@ interface YuanshenDB extends DBSchema {
     key: string
     value: CsvSourceRegistry
   }
+  statExclusions: {
+    key: string
+    value: ExclusionScopeRecord
+  }
 }
 
 const DB_NAME = 'yuanshen-helper'
-const DB_VERSION = 4
+const DB_VERSION = 5
 
 let dbPromise: Promise<IDBPDatabase<YuanshenDB>> | null = null
 const blockedListeners = new Set<(version: number) => void>()
@@ -146,6 +151,9 @@ export function getDb(): Promise<IDBPDatabase<YuanshenDB>> {
         }
         if (!db.objectStoreNames.contains('csvSources')) {
           db.createObjectStore('csvSources', { keyPath: 'id' })
+        }
+        if (!db.objectStoreNames.contains('statExclusions')) {
+          db.createObjectStore('statExclusions', { keyPath: 'scopeId' })
         }
       },
     })

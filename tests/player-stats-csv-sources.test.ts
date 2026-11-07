@@ -264,6 +264,46 @@ describe('关联清单持久化', () => {
     expect((await loadCsvRegistry()).sources[0]!.name).toBe('renamed.csv')
   })
 
+  it('重新关联可持久保存沿用的排除作用域，且同一作用域不能绑定两个文件', async () => {
+    const store = createIndexedDbCsvStore()
+    await addOne(store, 'a.csv', 1, 'src-a')
+    await addOne(store, 'b.csv', 2, 'src-b')
+
+    const inherited = await store.relink(
+      'src-a',
+      storedHandle('a-next.csv'),
+      summary(3),
+      2,
+      undefined,
+      'scope-a',
+    )
+    expect(inherited?.sources[0]!.exclusionScopeId).toBe('scope-a')
+    const reloaded = await loadCsvRegistry()
+    expect(reloaded.sources[0]!.exclusionScopeId).toBe('scope-a')
+
+    const duplicate = await store.relink(
+      'src-b',
+      storedHandle('b-next.csv'),
+      summary(4),
+      reloaded.revision,
+      undefined,
+      'scope-a',
+    )
+    expect(duplicate).toBeNull()
+    expect((await loadCsvRegistry()).sources[1]!.name).toBe('b.csv')
+
+    const fresh = await store.relink(
+      'src-a',
+      storedHandle('a-new.csv'),
+      summary(5),
+      reloaded.revision,
+      undefined,
+      null,
+    )
+    expect(fresh?.sources[0]!.exclusionScopeId).toBeUndefined()
+    expect((await loadCsvRegistry()).sources[0]!.exclusionScopeId).toBeUndefined()
+  })
+
   it('批量添加在事务内校验 revision，并发提交不会重复关联', async () => {
     const store = createIndexedDbCsvStore()
     const first = await addOne(store, 'a.csv', 1, 'src-a')

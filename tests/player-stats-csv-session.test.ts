@@ -615,7 +615,7 @@ describe('关联批次与并发', () => {
     const result = await session.relink(aId, new FakeHandle('c.csv', csv(8000), 'c'))
     expect(result).toBe('failed')
     expect((await base.load()).sources[0]!.name).toBe('renamed.csv')
-    expect(session.state.message).toContain('关联清单已在其他页面变化')
+    expect(session.state.message).toContain('关联清单或排除规则已在其他页面变化')
   })
 
   it('同一批里两个句柄指向同一文件时只关联一次', async () => {

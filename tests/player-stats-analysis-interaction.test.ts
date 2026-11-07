@@ -35,6 +35,16 @@ class TestElement {
       }
       this.append(panel)
     }
+    // 统计结果定位按钮：按 data 标识投影为可点击节点，驱动真实视图处理函数。
+    for (const match of value.matchAll(
+      /<button[^>]*data-exclusion-(week|month|day)="([^"]*)"([^>]*)>/g,
+    )) {
+      const button = new TestElement('button')
+      Object.assign(button.dataset, { [`exclusion${match[1]![0]!.toUpperCase()}${match[1]!.slice(1)}`]: match[2] })
+      const level = /data-exclusion-level="([^"]*)"/.exec(match[3]!)
+      if (level) button.dataset.exclusionLevel = level[1]!
+      this.append(button)
+    }
   }
   value = ''
   checked = false
@@ -114,6 +124,7 @@ function video(overrides: Partial<Video> = {}): Video {
 let view: AnalysisView
 let root: TestElement
 let writeText: ReturnType<typeof vi.fn>
+let recordedScopes: import('../src/features/player-stats/statistics-exclusion-candidates').ExclusionCandidateScope[]
 const findClass = (name: string): TestElement => root.all().find((node) => node.classList.contains(name))!
 function nav(key: string): void {
   root.all().find((node) => node.dataset.nav === key)!.emit('click')
@@ -160,7 +171,11 @@ beforeEach(() => {
     body: new TestElement('body'),
     execCommand: () => false,
   })
-  view = createAnalysisView({ autoSiteAnchors: false })
+  recordedScopes = []
+  view = createAnalysisView({
+    autoSiteAnchors: false,
+    onViewRecordings: (scope) => recordedScopes.push(scope),
+  })
   root = view.root as unknown as TestElement
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -292,7 +307,8 @@ describe('概览今日成绩与样本说明', () => {
     view.update([video({ end_time: date(2) })])
     const html = findClass('analysis-view').innerHTML
     expect(html).toContain('今日暂无成绩')
-    expect(html).toContain('不受公共筛选与统计 3BV 下限影响')
+    expect(html).not.toContain('不受公共筛选与统计 3BV 下限影响')
+    expect(html).not.toContain('today-scope')
     expect(html).not.toContain('today-table')
     expect(html).not.toContain('data-copy-kind="today"')
   })
@@ -359,7 +375,8 @@ describe('周 T37 复制', () => {
     expect(html).toContain('aria-label="复制 2026/10/26 至 2026/11/01 周成绩"')
     expect(html).toContain('aria-label="复制 2026/11/02 至 2026/11/08 周成绩"')
     expect(html).toContain('<th class="copy-cell"></th>')
-    expect(html).toContain('<td colspan="8">')
+    expect(html).toContain('<td colspan="9">')
+    expect(html).toContain('data-exclusion-week="')
     expect(html).toContain('data-copy-panel="month"')
     expect(html).toContain('data-copy-panel="year"')
     expect(html).toContain('26/11/2 当周明细')
@@ -619,5 +636,64 @@ describe('参数面板联动', () => {
     floor.emit('change')
     expect(floor.value).toBe('150')
     expect(saved).toHaveLength(1)
+  })
+})
+
+describe('从统计结果定位录像', () => {
+  function jumpButton(kind: 'week' | 'month' | 'day', value: string): TestElement {
+    return root.all().find(
+      (node) =>
+        node.tag === 'button' &&
+        node.dataset[`exclusion${kind[0]!.toUpperCase()}${kind.slice(1)}`] === value,
+    )!
+  }
+
+  it('日历单日、周和月带入实际日期交集与当前口径，不复制也不展开原行', () => {
+    view.update([
+      video({ id: 1, level: 'e', bv: 120, end_time: date(3) }),
+      video({ id: 2, level: 'e', bv: 120, end_time: date(2) }),
+    ], { csv: false, identity: 'player-16' })
+
+    const day = new Date(2026, 10, 3).getTime()
+    jumpButton('day', String(day)).emit('click')
+    expect(recordedScopes).toHaveLength(1)
+    expect(recordedScopes[0]).toMatchObject({
+      source: 'site',
+      start: day,
+      endExclusive: new Date(2026, 10, 4).getTime(),
+      levels: ['b', 'i', 'e'],
+      software: 'all',
+      nfOnly: false,
+      origin: 'jump',
+    })
+    expect(recordedScopes[0]!.label).toContain('自然日')
+
+    pick('custom', 'global')
+    applyDraft('2026-11-01', '2026-11-02', 'global')
+    nav('trend')
+    jumpButton('week', String(new Date(2026, 10, 2).getTime())).emit('click')
+    expect(recordedScopes).toHaveLength(2)
+    expect(recordedScopes[1]).toMatchObject({
+      source: 'site',
+      start: new Date(2026, 10, 2).getTime(),
+      endExclusive: new Date(2026, 10, 3).getTime(),
+      levels: ['b', 'i', 'e'],
+      software: 'all',
+      nfOnly: false,
+    })
+
+    jumpButton('month', '2026-11').emit('click')
+    expect(recordedScopes).toHaveLength(3)
+    expect(recordedScopes[2]).toMatchObject({
+      start: new Date(2026, 10, 1).getTime(),
+      endExclusive: new Date(2026, 10, 3).getTime(),
+      levels: ['e'],
+      software: 'all',
+      nfOnly: false,
+      origin: 'jump',
+    })
+    expect(recordedScopes[2]!.label).toContain('高级')
+    expect(writeText).not.toHaveBeenCalled()
+    expect(root.all().find((node) => node.dataset.nav === 'trend')!.classList.contains('active')).toBe(true)
   })
 })

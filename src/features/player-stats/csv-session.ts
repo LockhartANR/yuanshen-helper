@@ -25,10 +25,12 @@ import type {
   CsvLoadedSource,
   CsvPermissionState,
   CsvSourceRecord,
+  CsvScopeGuard,
   CsvSourceRegistry,
   CsvSourceStore,
   CsvSourceSummary,
 } from './csv-sources'
+import type { CsvRecord } from './csv'
 import type { Video } from './model'
 
 /** 添加 / 重新关联的结果，供视图决定是否自动切到 CSV。 */
@@ -37,6 +39,7 @@ export type CsvOperationResult = 'success' | 'cancelled' | 'failed'
 interface StagedAdd {
   input: CsvAddInput
   videos: Video[]
+  records: CsvRecord[]
 }
 
 export interface CsvSourceDelta {
@@ -71,12 +74,24 @@ export interface CsvSessionOptions {
   now?: () => number
 }
 
+/** 重新关联确认时依据的清单 / 来源版本；对话框等待期间变化则旧确认作废。 */
+export interface CsvRelinkBasis {
+  registryRevision: number
+  sourceRevision?: number
+}
+
 export interface CsvSession {
   readonly state: CsvSessionState
   restore(): Promise<void>
   refreshAll(): Promise<void>
   addFiles(handles: CsvFileHandle[]): Promise<CsvOperationResult>
-  relink(sourceId: string, handle: CsvFileHandle): Promise<CsvOperationResult>
+  relink(
+    sourceId: string,
+    handle: CsvFileHandle,
+    exclusionScopeId?: string | null,
+    basis?: CsvRelinkBasis,
+    scopeGuard?: CsvScopeGuard,
+  ): Promise<CsvOperationResult>
   removeSource(sourceId: string): Promise<void>
   removeAll(): Promise<void>
   grant(sourceId: string): Promise<void>
@@ -86,6 +101,8 @@ export interface CsvSession {
   clearMessage(): void
   hasSnapshot(): boolean
   videos(): Video[]
+  /** 按关联清单顺序返回本页已成功加载的原始快照（含原始列身份）。 */
+  loadedSources(): CsvLoadedSource[]
   loadedCount(): number
   sourceSummary(sourceId: string): CsvSourceSummary | null
   destroy(): void
@@ -139,6 +156,11 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       snapshotCache = { version: state.snapshotVersion, videos: buildCsvSnapshot(sources) }
     }
     return snapshotCache.videos
+  }
+
+  function loadedSources(): CsvLoadedSource[] {
+    if (!hasSnapshot()) return []
+    return state.sources.map((source) => state.loaded.get(source.sourceId)!)
   }
 
   function loadedCount(): number {
@@ -260,6 +282,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
           sourceRevision: source.revision,
           name: source.name,
           videos: result.videos,
+          records: result.records,
           summary: result.summary,
         })
         for (const error of result.errors) {
@@ -449,6 +472,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
           staged.push({
             input: { sourceId: createCsvSourceId(), handle, summary: result.summary },
             videos: result.videos,
+            records: result.records,
           })
           for (const error of result.errors) {
             errors.push(`${handle.name} 第 ${error.line} 行：${error.message}`)
@@ -519,6 +543,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
           sourceRevision: record.revision,
           name: record.name,
           videos: item.videos,
+          records: item.records,
           summary: item.input.summary,
         }
         state.loaded.set(record.sourceId, loaded)
@@ -564,7 +589,13 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     return text
   }
 
-  async function relink(sourceId: string, handle: CsvFileHandle): Promise<CsvOperationResult> {
+  async function relink(
+    sourceId: string,
+    handle: CsvFileHandle,
+    exclusionScopeId?: string | null,
+    basis?: CsvRelinkBasis,
+    scopeGuard?: CsvScopeGuard,
+  ): Promise<CsvOperationResult> {
     if (state.loading || disposed) return 'cancelled'
     if (!state.ready) await restore()
     if (disposed) return 'cancelled'
@@ -585,6 +616,16 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     const source = state.sources.find((item) => item.sourceId === sourceId)
     if (!source) {
       state.message = '该文件已在其他页面移除，请刷新关联清单。'
+      notify()
+      return 'failed'
+    }
+    if (
+      basis &&
+      (registry.revision !== basis.registryRevision ||
+        (basis.sourceRevision !== undefined &&
+          source.revision !== basis.sourceRevision))
+    ) {
+      state.message = '关联清单已在其他页面变化，请重新选择并确认；原来源未改变。'
       notify()
       return 'failed'
     }
@@ -612,8 +653,11 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
         sourceId,
         handle,
         result.summary,
-        registry.revision,
+        basis?.registryRevision ?? registry.revision,
         current,
+        exclusionScopeId ?? null,
+        basis?.sourceRevision,
+        scopeGuard,
       )
       if (!current()) return 'cancelled'
       if (!next) {
@@ -626,7 +670,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
         if (!current()) return 'cancelled'
         if (fresh) adopt(fresh)
         state.message = fresh?.sources.some((item) => item.sourceId === sourceId)
-          ? '关联清单已在其他页面变化，请重新关联；原来源未改变。'
+          ? '关联清单或排除规则已在其他页面变化，请重新关联；原来源未改变。'
           : '该文件已在其他页面移除，原来源未改变。'
         return 'failed'
       }
@@ -642,6 +686,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
           sourceRevision: record.revision,
           name: record.name,
           videos: result.videos,
+          records: result.records,
           summary: result.summary,
         })
         state.snapshotVersion += 1
@@ -791,6 +836,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     clearMessage,
     hasSnapshot,
     videos,
+    loadedSources,
     loadedCount,
     sourceSummary,
     destroy,

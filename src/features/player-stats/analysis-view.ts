@@ -1,10 +1,15 @@
-import { formatCount } from '../../shared/format'
+import { formatCount, formatShortDate } from '../../shared/format'
 import { el } from '../../shared/ui'
 import { configureColors } from './colors'
-import { startOfLocalDay } from './analysis-range'
+import { addLocalDays, rangeHint, startOfLocalDay } from './analysis-range'
 import type { RangeKey } from './analysis-range'
 import type { PeriodMode } from './analysis'
 import type { Level, Video } from './model'
+import { LEVELS, LEVEL_LABELS } from './model'
+import {
+  intersectCandidateRange,
+} from './statistics-exclusion-candidates'
+import type { ExclusionCandidateScope } from './statistics-exclusion-candidates'
 import { createAnalysisController } from './analysis-controller'
 import { tabDataFor, withTrendCopyFields } from './analysis-tab-data'
 import type { AnalysisTabData } from './analysis-tab-data'
@@ -70,6 +75,8 @@ async function copyText(text: string): Promise<boolean> {
 export interface AnalysisViewOptions {
   /** 启动时若保存的是网站锚点，是否自动读取网站；独立 CSV 传 false 以免联网。 */
   autoSiteAnchors?: boolean
+  /** 从统计结果打开录像列表；范围由当前结果的实际日期与筛选决定。 */
+  onViewRecordings?: (scope: ExclusionCandidateScope) => void
 }
 
 /** 大表数据更新参数：数据源与来源身份。 */
@@ -82,6 +89,10 @@ export interface AnalysisUpdateOptions {
 export interface AnalysisView {
   root: HTMLElement
   update(videos: Video[], options?: AnalysisUpdateOptions): void
+  /** 当前统计口径的各级 3BV 下限；直接打开慢局候选时作为默认基准。 */
+  getBvFloors(): Record<Level, number>
+  /** 当前已应用时段与筛选，用于面板的「已应用时段」而不是跳转范围。 */
+  getAppliedScope(): ExclusionCandidateScope
   /** 销毁视图：使进行中的锚点请求失效并移除节点。 */
   destroy(): void
 }
@@ -493,6 +504,62 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     if (target) focusLsfEvent(target.id, day)
   }
 
+  /** 从统计结果进入录像管理：只传实际日期交集与当前口径。 */
+  function openRecordings(
+    start: number,
+    endExclusive: number,
+    levels: readonly Level[],
+    label: string,
+  ): void {
+    if (!options.onViewRecordings) return
+    const clipped = intersectCandidateRange(start, endExclusive, snapshot.bounds)
+    options.onViewRecordings({
+      source: snapshot.dataset.source === 'csv' ? 'csv' : 'site',
+      sourceId: null,
+      start: clipped.start,
+      endExclusive: clipped.endExclusive,
+      levels: [...levels],
+      software: snapshot.dataset.source === 'csv' ? 'all' : snapshot.filters.software,
+      nfOnly: snapshot.filters.nfOnly,
+      floors: { ...snapshot.settings.bvFloors },
+      label,
+      origin: 'jump',
+    })
+  }
+
+  function openCalendarDay(value: string): void {
+    const day = Number(value)
+    if (!Number.isFinite(day)) return
+    openRecordings(day, addLocalDays(day, 1), LEVELS, `自然日 ${formatShortDate(day)}`)
+  }
+
+  function openWeek(value: string): void {
+    const start = Number(value)
+    if (!Number.isFinite(start)) return
+    openRecordings(
+      start,
+      addLocalDays(start, 7),
+      LEVELS,
+      `周 ${formatShortDate(start)}–${formatShortDate(addLocalDays(start, 6))}`,
+    )
+  }
+
+  function openMonth(value: string, level: Level): void {
+    const match = /^(\d{4})-(\d{2})$/.exec(value)
+    if (!match) return
+    const year = Number(match[1])
+    const month = Number(match[2])
+    if (month < 1 || month > 12) return
+    const start = new Date(year, month - 1, 1).getTime()
+    const end = new Date(year, month, 1).getTime()
+    openRecordings(
+      start,
+      end,
+      [level],
+      `${year}年${month}月 · ${LEVEL_LABELS[level]}`,
+    )
+  }
+
   nav.addEventListener('click', (event) => {
     const button = (event.target as HTMLElement).closest<HTMLElement>('[data-nav]')
     if (!button) return
@@ -501,6 +568,25 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
 
   viewHost.addEventListener('click', (event) => {
     const target = event.target as HTMLElement
+    // 「查看录像」必须先于周 / 月行展开处理，不能顺带复制或展开明细。
+    const calendarDay = target.closest<HTMLElement>('[data-exclusion-day]')
+    if (calendarDay) {
+      openCalendarDay(calendarDay.dataset.exclusionDay ?? '')
+      return
+    }
+    const weekJump = target.closest<HTMLElement>('[data-exclusion-week]')
+    if (weekJump) {
+      openWeek(weekJump.dataset.exclusionWeek ?? '')
+      return
+    }
+    const monthJump = target.closest<HTMLElement>('[data-exclusion-month]')
+    if (monthJump) {
+      openMonth(
+        monthJump.dataset.exclusionMonth ?? '',
+        (monthJump.dataset.exclusionLevel as Level | undefined) ?? 'e',
+      )
+      return
+    }
     // 梁山分：展开明细、显示更多、图表定位都要在通用行展开之前处理。
     const lsfToggle = target.closest<HTMLElement>('[data-lsf-toggle]')
     if (lsfToggle) {
@@ -711,5 +797,22 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     root.remove()
   }
 
-  return { root, update, destroy }
+  return {
+    root,
+    update,
+    getBvFloors: () => ({ ...settings.bvFloors }),
+    getAppliedScope: () => ({
+      source: snapshot.dataset.source === 'csv' ? 'csv' : 'site',
+      sourceId: null,
+      start: snapshot.bounds.start,
+      endExclusive: snapshot.bounds.endExclusive,
+      levels: [...LEVELS],
+      software: snapshot.dataset.source === 'csv' ? 'all' : snapshot.filters.software,
+      nfOnly: snapshot.filters.nfOnly,
+      floors: { ...snapshot.settings.bvFloors },
+      label: rangeHint(snapshot.bounds),
+      origin: 'direct',
+    }),
+    destroy,
+  }
 }

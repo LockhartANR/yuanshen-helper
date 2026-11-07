@@ -5,6 +5,7 @@ import {
 import { el } from '../../../shared/ui'
 import type { CsvSession } from '../csv-session'
 import { formatValidDelta } from '../csv-sources'
+import type { CsvRelinkChoice, CsvRelinkMode } from '../player-controller'
 import type { PlayerSnapshot, PlayerSource } from '../player-state'
 
 const CSV_FORMAT_HINT =
@@ -29,6 +30,8 @@ export interface CsvPanel {
   feedback: HTMLElement
   /** 浏览器没有文件句柄 API 时，由点击隐藏 input 取得本次文件。 */
   requestFiles(multiple: boolean): Promise<File[]>
+  /** 重新关联到不同文件时，让用户明确选择是否沿用原排除规则。 */
+  confirmRelink(choice: CsvRelinkChoice): Promise<CsvRelinkMode>
   render(snapshot: PlayerSnapshot, session: CsvSession): void
 }
 
@@ -94,9 +97,73 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
   panelHead.append(panelTitle, panelActions)
   const panelNote = el('p', 'csv-sources-note')
   const list = el('ul', 'csv-source-list')
-  panel.append(panelHead, panelNote, list)
+
+  const relinkBox = el('section', 'csv-relink-choice hidden')
+  relinkBox.setAttribute('role', 'dialog')
+  relinkBox.setAttribute('aria-labelledby', 'csv-relink-title')
+  const relinkTitle = el('h3', 'csv-relink-title', '重新关联 CSV')
+  relinkTitle.id = 'csv-relink-title'
+  relinkTitle.tabIndex = -1
+  const relinkText = el('p', 'csv-relink-text')
+  const relinkActions = el('div', 'csv-relink-actions')
+  const inheritButton = el('button', 'button primary', '沿用原排除规则')
+  const freshButton = el('button', 'button', '作为新来源')
+  const cancelRelinkButton = el('button', 'button', '取消')
+  for (const node of [inheritButton, freshButton, cancelRelinkButton]) node.type = 'button'
+  relinkActions.append(inheritButton, freshButton, cancelRelinkButton)
+  const relinkHint = el(
+    'p',
+    'csv-relink-hint',
+    '沿用只延续规则来源关系，仍会按新文件逐条匹配；无法确认的重复条目保持未匹配，不会猜测排除。',
+  )
+  relinkBox.append(relinkTitle, relinkText, relinkActions, relinkHint)
+  panel.append(panelHead, panelNote, list, relinkBox)
 
   let pendingInput: ((files: File[]) => void) | null = null
+  let pendingRelink: ((mode: CsvRelinkMode) => void) | null = null
+  let relinkFocus: HTMLElement | null = null
+
+  function finishRelink(mode: CsvRelinkMode): void {
+    const resolve = pendingRelink
+    pendingRelink = null
+    relinkBox.classList.add('hidden')
+    resolve?.(mode)
+    const target = relinkFocus
+    relinkFocus = null
+    target?.focus?.()
+  }
+
+  function confirmRelink(choice: CsvRelinkChoice): Promise<CsvRelinkMode> {
+    // 上一次选择尚未返回时先按取消处理，绝不让两个关联流程共用同一个选择。
+    pendingRelink?.('cancel')
+    pendingRelink = null
+    relinkText.textContent =
+      `当前来源「${choice.sourceName}」有 ${choice.ruleCount} 条排除规则。` +
+      `是否把「${choice.newName}」视为原成绩来源的后续版本？`
+    relinkBox.classList.remove('hidden')
+    return new Promise<CsvRelinkMode>((resolve) => {
+      pendingRelink = (mode) => resolve(mode)
+      const active =
+        typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+      relinkFocus = active && typeof active.focus === 'function' ? active : null
+      inheritButton.disabled = choice.ruleCount === 0
+      inheritButton.title =
+        choice.ruleCount === 0
+          ? '当前来源没有可沿用的排除规则'
+          : '保留原规则并逐条匹配新文件'
+      relinkTitle.focus()
+    })
+  }
+
+  inheritButton.addEventListener('click', () => finishRelink('inherit'))
+  freshButton.addEventListener('click', () => finishRelink('new'))
+  cancelRelinkButton.addEventListener('click', () => finishRelink('cancel'))
+  relinkBox.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      finishRelink('cancel')
+    }
+  })
 
   function requestFiles(multiple: boolean): Promise<File[]> {
     return new Promise((resolve) => {
@@ -209,6 +276,7 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
   }
 
   function render(snapshot: PlayerSnapshot, session: CsvSession): void {
+    if (snapshot.source !== 'csv' && pendingRelink) finishRelink('cancel')
     const current = session.state
     const emptyState =
       snapshot.standaloneCsv && current.ready && current.sources.length === 0
@@ -247,6 +315,9 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
       )
       panelNote.textContent =
         `已加载 ${current.sources.length} 个文件、${formatCount(session.loadedCount())} 局` +
+        (snapshot.exclusion.excludedCount > 0
+          ? ` · 已排除 ${formatCount(snapshot.exclusion.excludedCount)} 局`
+          : '') +
         (last > 0 ? ` · 上次读取 ${formatDateTime(last)}` : '')
     } else {
       panelNote.textContent = ''
@@ -256,5 +327,5 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
     renderFeedback(session)
   }
 
-  return { sourceBar, empty, panel, feedback, requestFiles, render }
+  return { sourceBar, empty, panel, feedback, requestFiles, confirmRelink, render }
 }

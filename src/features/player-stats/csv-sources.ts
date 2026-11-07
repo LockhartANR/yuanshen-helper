@@ -9,7 +9,7 @@ import { formatCount } from '../../shared/format'
 import { errorMessage } from '../../shared/ui'
 import { getDb } from '../../shared/db'
 import { parseStatsCsv } from './csv'
-import type { CsvError } from './csv'
+import type { CsvError, CsvRecord } from './csv'
 import type { Video } from './model'
 
 export const CSV_MAX_BYTES = 20 * 1024 * 1024
@@ -45,6 +45,8 @@ export interface CsvSourceRecord {
   /** 该来源自身被替换（重新关联）的版本；清单级版本见 registry.revision。 */
   revision: number
   lastSuccess: CsvSourceSummary | null
+  /** 用户明确沿用的统计排除作用域；持久保存，重开页面后继续生效。 */
+  exclusionScopeId?: string
 }
 
 export interface CsvSourceRegistry {
@@ -76,6 +78,8 @@ export class CsvIdentityError extends Error {
 export interface CsvFileRead {
   summary: CsvSourceSummary
   videos: Video[]
+  /** 与 videos 一一对应的原始列，用于排除规则身份。 */
+  records: CsvRecord[]
   errors: CsvError[]
 }
 
@@ -85,6 +89,8 @@ export interface CsvLoadedSource {
   sourceRevision: number
   name: string
   videos: Video[]
+  /** 旧测试或迁移数据可能没有；真实读取必须保留原始身份。 */
+  records?: CsvRecord[]
   summary: CsvSourceSummary
 }
 
@@ -92,6 +98,14 @@ export interface CsvAddInput {
   sourceId: string
   handle: CsvFileHandle
   summary: CsvSourceSummary
+}
+
+/** 重新关联沿用规则时，提交阶段仍需核对的排除作用域修订。 */
+export interface CsvScopeGuard {
+  scopeId: string
+  revision: number
+  /** 内存存储或跨 store 预检；IndexedDB 事务内还会再次读取。 */
+  verify?: () => Promise<boolean>
 }
 
 export interface CsvSourceStore {
@@ -108,6 +122,9 @@ export interface CsvSourceStore {
     summary: CsvSourceSummary,
     expectedRevision: number,
     isValid?: () => boolean,
+    exclusionScopeId?: string | null,
+    expectedSourceRevision?: number,
+    scopeGuard?: CsvScopeGuard,
   ): Promise<CsvSourceRegistry | null>
   remove(sourceId: string): Promise<CsvSourceRegistry>
   clear(): Promise<CsvSourceRegistry>
@@ -153,6 +170,9 @@ export function normalizeCsvRegistry(value: unknown): CsvSourceRegistry {
       addedAt: typeof record.addedAt === 'number' ? record.addedAt : 0,
       revision: typeof record.revision === 'number' && record.revision >= 0 ? record.revision : 0,
       lastSuccess: isSummary(record.lastSuccess) ? record.lastSuccess : null,
+      ...(typeof record.exclusionScopeId === 'string' && record.exclusionScopeId !== ''
+        ? { exclusionScopeId: record.exclusionScopeId }
+        : {}),
     })
   }
   return {
@@ -178,10 +198,23 @@ export function createCsvSourceId(): string {
 
 async function updateRegistry(
   mutate: (registry: CsvSourceRegistry) => CsvSourceRegistry | null,
+  scopeGuard?: CsvScopeGuard,
 ): Promise<CsvSourceRegistry | null> {
   const db = await getDb()
-  const tx = db.transaction('csvSources', 'readwrite')
-  const current = normalizeCsvRegistry(await tx.store.get(CSV_REGISTRY_ID))
+  const tx = db.transaction(
+    scopeGuard ? ['csvSources', 'statExclusions'] : ['csvSources'],
+    'readwrite',
+  )
+  const sourceStore = tx.objectStore('csvSources')
+  if (scopeGuard) {
+    // 关联清单与排除作用域在同一事务中校验，文件读取期间规则变化也不会写绑定。
+    const scope = await tx.objectStore('statExclusions').get(scopeGuard.scopeId)
+    if (!scope || scope.revision !== scopeGuard.revision) {
+      await tx.done
+      return null
+    }
+  }
+  const current = normalizeCsvRegistry(await sourceStore.get(CSV_REGISTRY_ID))
   // mutate 必须是同步函数，事务里不能等待文件选择、授权或文件读取。
   const next = mutate(current)
   if (!next) {
@@ -193,7 +226,7 @@ async function updateRegistry(
     revision: current.revision + 1,
     sources: next.sources,
   }
-  await tx.store.put(registry)
+  await sourceStore.put(registry)
   await tx.done
   return registry
 }
@@ -208,7 +241,10 @@ type RegistryMutation = (registry: CsvSourceRegistry) => CsvSourceRegistry | nul
 /** 两种存储只负责读写，来源更新与版本校验共用同一份实现。 */
 function createSourceStore(
   load: CsvSourceStore['load'],
-  update: (mutate: RegistryMutation) => Promise<CsvSourceRegistry | null>,
+  update: (
+    mutate: RegistryMutation,
+    scopeGuard?: CsvScopeGuard,
+  ) => Promise<CsvSourceRegistry | null>,
 ): CsvSourceStore {
   return {
     load,
@@ -233,27 +269,58 @@ function createSourceStore(
         return { ...current, sources: [...current.sources, ...added] }
       })
     },
-    async relink(sourceId, handle, summary, expectedRevision, isValid) {
+    async relink(
+      sourceId,
+      handle,
+      summary,
+      expectedRevision,
+      isValid,
+      exclusionScopeId,
+      expectedSourceRevision,
+      scopeGuard,
+    ) {
+      if (scopeGuard?.verify && !(await scopeGuard.verify())) return null
       return update((current) => {
         if (isValid && !isValid()) return null
         if (current.revision !== expectedRevision) return null
         const source = current.sources.find((item) => item.sourceId === sourceId)
         if (!source) return null
+        if (
+          expectedSourceRevision !== undefined &&
+          source.revision !== expectedSourceRevision
+        ) {
+          return null
+        }
+        const inherited =
+          typeof exclusionScopeId === 'string' && exclusionScopeId !== ''
+            ? exclusionScopeId
+            : undefined
+        // 一个排除作用域不能同时绑定两个当前文件；冲突时整次重关联不写入。
+        if (
+          inherited &&
+          current.sources.some(
+            (item) => item.sourceId !== sourceId && item.exclusionScopeId === inherited,
+          )
+        ) {
+          return null
+        }
         return {
           ...current,
-          sources: current.sources.map((item) =>
-            item.sourceId === sourceId
-              ? {
-                  ...item,
-                  name: handle.name,
-                  handle,
-                  revision: item.revision + 1,
-                  lastSuccess: summary,
-                }
-              : item,
-          ),
+          sources: current.sources.map((item) => {
+            if (item.sourceId !== sourceId) return item
+            const next: CsvSourceRecord = {
+              ...item,
+              name: handle.name,
+              handle,
+              revision: item.revision + 1,
+              lastSuccess: summary,
+            }
+            if (inherited) next.exclusionScopeId = inherited
+            else delete next.exclusionScopeId
+            return next
+          }),
         }
-      })
+      }, scopeGuard)
     },
     async remove(sourceId) {
       const registry = await update((current) => ({
@@ -291,7 +358,7 @@ export function createMemoryCsvStore(): CsvSourceStore {
   let registry = emptyCsvRegistry()
   return createSourceStore(
     async () => copyRegistry(registry),
-    async (mutate) => {
+    async (mutate, _scopeGuard) => {
       const next = mutate(copyRegistry(registry))
       if (!next) return null
       registry = { ...next, id: CSV_REGISTRY_ID, revision: registry.revision + 1 }
@@ -351,7 +418,12 @@ export async function readCsvFile(handle: CsvFileHandle, now = Date.now()): Prom
     size: file.size,
     lastModified: file.lastModified,
   }
-  return { summary, videos: parsed.videos, errors: parsed.errors }
+  return {
+    summary,
+    videos: parsed.videos,
+    records: parsed.records,
+    errors: parsed.errors,
+  }
 }
 
 /**
