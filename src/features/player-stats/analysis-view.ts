@@ -22,7 +22,7 @@ import type {
 import { createEditorFocus } from './ui/editor-focus'
 import { lsfDetailBody } from './ui/lsf-view'
 import { rangePanelHtml, rangeSelectHtml } from './ui/range-control'
-import { authorHomeLink, createSettingsPanel } from './ui/settings-panel'
+import { createSettingsPanel } from './ui/settings-panel'
 import { renderDistTab } from './ui/tabs/dist'
 import { renderEffTab } from './ui/tabs/eff'
 import { renderLsfTab } from './ui/tabs/lsf'
@@ -291,17 +291,9 @@ export function createAnalysisView(options: AnalysisViewOptions = {}): AnalysisV
     }
   }
 
-  const note = el(
-    'p',
-    'analysis-note',
-    '赛博大表只统计模式 00 的已审核录像，3BV 下限默认 10 / 30 / 100；网站 NF 按右键 = 0，CSV 按 style=NF。',
-  )
-  const credit = el('p', 'analysis-note', '统计方式来自大表 ArbiterStatsAuto · ')
-  credit.append(authorHomeLink())
-
   const toolbar = el('div', 'analysis-toolbar')
   toolbar.append(filters, nav)
-  root.append(toolbar, rangePanel, settingsPanel.root, viewHost, note, credit)
+  root.append(toolbar, rangePanel, settingsPanel.root, viewHost)
 
   const editorFocus = createEditorFocus({
     root,

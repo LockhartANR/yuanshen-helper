@@ -158,6 +158,78 @@ a {
   color: var(--muted);
 }
 
+/* 各用户页面共用的「关于」卡片；宽度跟随所在内容区。 */
+.about-card {
+  margin-bottom: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.about-card h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.about-desc {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.about-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+
+.about-row:last-child {
+  margin-bottom: 0;
+}
+
+.about-label {
+  flex: none;
+  width: 132px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-width: 0;
+}
+
+.about-row > .site-link,
+.about-links .site-link {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .about-card {
+    padding: 14px 16px;
+  }
+
+  .about-desc {
+    margin-bottom: 12px;
+  }
+
+  .about-row {
+    display: block;
+  }
+
+  .about-label {
+    width: auto;
+    margin-bottom: 2px;
+  }
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }

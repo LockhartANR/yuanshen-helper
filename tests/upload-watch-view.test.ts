@@ -30,6 +30,9 @@ class Node {
   parent: Node | null = null
   className = ''
   text = ''
+  href = ''
+  target = ''
+  rel = ''
   dataset: Record<string, string> = {}
   style: Record<string, string> = {}
   attrs = new Map<string, string>()
@@ -215,5 +218,20 @@ describe('上传页展示', () => {
     const first = list.children[0]
     await update('uploadWatchStatus')
     expect(list.children[0]).toBe(first)
+  })
+
+  it('主要内容之后只有一个统一关于卡片，状态更新不重复创建', async () => {
+    await mount()
+    const page = byClass('upload-page')
+    const card = byClass('about-card')
+    expect(page.children[page.children.length - 1]).toBe(card)
+    expect(card.textContent).toContain('元神助手 vtest · 开源扫雷网辅助工具')
+    expect(page.all().filter((node) => node.classList.contains('page-footer'))).toHaveLength(0)
+
+    fixture.status.uploaded = 3
+    await update('uploadWatchStatus')
+    await update('uploadWatchLog')
+    expect(page.all().filter((node) => node.classList.contains('about-card'))).toEqual([card])
+    expect(page.children[page.children.length - 1]).toBe(card)
   })
 })

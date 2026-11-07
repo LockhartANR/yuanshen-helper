@@ -90,6 +90,9 @@ class TestElement {
   title = ''
   placeholder = ''
   value = ''
+  href = ''
+  target = ''
+  rel = ''
   disabled = false
   checked = false
   files: Array<{ name: string; size: number; text(): Promise<string> }> = []
@@ -306,11 +309,49 @@ beforeEach(() => {
   root = new TestElement('div')
   vi.stubGlobal('document', { createElement: (tag: string) => new TestElement(tag), title: '' })
   vi.stubGlobal('location', { search: '?id=16' })
+  vi.stubGlobal('chrome', {
+    runtime: { getManifest: () => ({ version: 'test' }) },
+  })
   stubWindow()
   vi.mocked(loadPlayer).mockResolvedValue(loaded())
   vi.mocked(fetchUserInfo).mockResolvedValue(null)
 })
 afterEach(() => vi.unstubAllGlobals())
+
+describe('统一关于卡片', () => {
+  it('网站页切页与刷新后仍只有一个页面级卡片，且位于内容最后', async () => {
+    await mount()
+    const cards = root.all().filter((node) => node.classList.contains('about-card'))
+    expect(cards).toHaveLength(1)
+    const card = cards[0]!
+    expect(card.visible()).toBe(true)
+    expect(card.textContent).toContain('元神助手 vtest · 开源扫雷网辅助工具')
+    const wrap = byClass('player-page')
+    expect(wrap.children[wrap.children.length - 1]).toBe(card)
+
+    visibleButton('赛博大表').click()
+    await startRefresh()
+    await vi.waitFor(() => expect(loadPlayer).toHaveBeenCalledTimes(2))
+    expect(root.all().filter((node) => node.classList.contains('about-card'))).toEqual([card])
+    expect(wrap.children[wrap.children.length - 1]).toBe(card)
+  })
+
+  it('嵌入失败态和独立 CSV 空态也显示卡片', async () => {
+    const pending = deferred<LoadedPlayer>()
+    vi.mocked(loadPlayer).mockReturnValueOnce(pending.promise)
+    await mount('?id=16&embed=analysis')
+    pending.reject(new Error('网络不可用'))
+    await pending.promise.catch(() => {})
+    await Promise.resolve()
+    expect(byClass('player-status').textContent).toBe('网络不可用')
+    expect(byClass('about-card').visible()).toBe(true)
+
+    await mount('?source=csv')
+    expect(byClass('csv-empty').visible()).toBe(true)
+    expect(byClass('about-card').visible()).toBe(true)
+    expect(root.all().filter((node) => node.classList.contains('about-card'))).toHaveLength(1)
+  })
+})
 
 describe('本地 CSV 关联清单', () => {
   it('PB 计数只归属成绩概况，空状态行不占位且初次读取不展示分析空态', async () => {

@@ -1,4 +1,5 @@
-import { el } from '../../../shared/ui'
+import { AUTHOR_HOME_URL } from '../../../shared/constants'
+import { el, externalLink } from '../../../shared/ui'
 import { DEFAULT_ANALYSIS_SETTINGS } from '../analysis-settings'
 import type { AnalysisSettings } from '../analysis-settings'
 import { LEVEL_LABELS, LEVELS } from '../model'
@@ -44,16 +45,6 @@ export interface SettingsPanelOptions {
   handlers: SettingsPanelHandlers
 }
 
-/** 原作者主页链接；参数面板来源说明与页面底部统计说明共用。 */
-export function authorHomeLink(): HTMLAnchorElement {
-  const link = document.createElement('a')
-  link.href = 'https://openms.top/#/player/48'
-  link.target = '_blank'
-  link.rel = 'noopener noreferrer'
-  link.textContent = '原作者主页'
-  return link
-}
-
 const BASIC_FIELDS: Array<[BasicSettingKey, string, number, number]> = [
   ['rankLimit', '榜单 Top', 10, 200],
   ['monthTop', '月 Top', 1, 50],
@@ -89,7 +80,7 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
   const root = el('section', 'analysis-settings hidden')
 
   const sourceNote = el('p', 'muted settings-source', '默认参数为大表 57.8 · ')
-  sourceNote.append(authorHomeLink())
+  sourceNote.append(externalLink('原作者主页', AUTHOR_HOME_URL))
   root.append(sourceNote)
 
   const basicInputs = new Map<BasicSettingKey, HTMLInputElement>()

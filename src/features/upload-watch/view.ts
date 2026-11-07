@@ -1,6 +1,6 @@
-import { DEVELOPER_LINKS, REPO_URL } from '../../shared/constants'
+import { createAboutCard } from '../../shared/about-card'
 import { formatDateTime } from '../../shared/format'
-import { brandLogo, el, errorMessage, externalLink } from '../../shared/ui'
+import { brandLogo, el, errorMessage } from '../../shared/ui'
 import { pauseWatch, send, startWatch } from './controller'
 import {
   clearWatchLogs,
@@ -329,19 +329,17 @@ export async function mountUploadWatch(root: HTMLElement): Promise<void> {
   const logList = el('div', 'logs')
   logCard.append(logHead, logList)
 
-  const footer = el('footer', 'page-footer')
-  footer.append(
-    `元神助手 v${chrome.runtime.getManifest().version} · `,
-    externalLink('仓库 ↗', REPO_URL),
-    el('br'),
-    '作者：',
-  )
-  for (const item of DEVELOPER_LINKS) {
-    footer.append(externalLink(`${item.label} ↗`, item.url), document.createTextNode(' '))
-  }
-
   let configuredLayout: boolean | undefined
-  page.append(header, dirCard, settingsCard, runCard, logCard, rulesCard, diagCard, footer)
+  page.append(
+    header,
+    dirCard,
+    settingsCard,
+    runCard,
+    logCard,
+    rulesCard,
+    diagCard,
+    createAboutCard(),
+  )
   root.append(page)
 
   render()

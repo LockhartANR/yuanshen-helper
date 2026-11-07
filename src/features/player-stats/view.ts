@@ -1,4 +1,5 @@
 import { SITE_ORIGIN } from '../../shared/constants'
+import { createAboutCard } from '../../shared/about-card'
 import { formatCount, formatDateTime } from '../../shared/format'
 import { askSelfId, resolveSelfId } from '../../shared/self-id'
 import { el, externalLink } from '../../shared/ui'
@@ -153,6 +154,7 @@ export async function mountPlayerStats(
     exclusionPanel.root,
     scorePane,
     analysisPane,
+    createAboutCard(),
   )
   root.replaceChildren(wrap)
 

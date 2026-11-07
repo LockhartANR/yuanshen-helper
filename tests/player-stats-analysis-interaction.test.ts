@@ -303,6 +303,12 @@ describe('全局与历史共用有效日期', () => {
 })
 
 describe('概览今日成绩与样本说明', () => {
+  it('大表底部不再保留独立的统计来源和口径说明', () => {
+    expect(root.all().filter((node) => node.classList.contains('analysis-note'))).toHaveLength(0)
+    expect(root.textContent).not.toContain('统计方式来自大表 ArbiterStatsAuto')
+    expect(root.textContent).not.toContain('赛博大表只统计模式 00 的已审核录像')
+  })
+
   it('三难度都没有今日成绩时显示紧凑空态，隐藏无内容的复制按钮', () => {
     view.update([video({ end_time: date(2) })])
     const html = findClass('analysis-view').innerHTML

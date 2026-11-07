@@ -1,4 +1,5 @@
-import { DEVELOPER_LINKS, REPO_URL, SITE_ORIGIN } from '../../shared/constants'
+import { SITE_ORIGIN } from '../../shared/constants'
+import { createAboutCard } from '../../shared/about-card'
 import { formatCount, formatDateTime } from '../../shared/format'
 import { addLog, clearLogs, getLogs, type LogEntry } from '../../shared/log'
 import { notifyDataChanged, onDataChanged } from '../../shared/bus'
@@ -8,7 +9,7 @@ import {
   saveSettings,
   type Settings,
 } from '../../shared/settings'
-import { brandLogo, el, errorMessage, externalLink } from '../../shared/ui'
+import { brandLogo, el, errorMessage } from '../../shared/ui'
 import {
   DEFAULT_SYNC_META,
   clearAllData,
@@ -46,7 +47,7 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   titles.append(el('h1', undefined, '元神助手'), el('p', undefined, '开源扫雷网辅助工具 · 控制台'))
   brand.append(logo, titles)
   const siteLink = el('a', 'site-link', 'openms.top ↗') as HTMLAnchorElement
-  siteLink.href = 'https://openms.top'
+  siteLink.href = SITE_ORIGIN
   siteLink.target = '_blank'
   siteLink.rel = 'noreferrer'
   const uploadLink = el('a', 'site-link', '自动上传 ↗') as HTMLAnchorElement
@@ -216,29 +217,7 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   )
   privacyCard.append(privacyTitle, privacy)
 
-  const aboutCard = el('section', 'card')
-  aboutCard.append(
-    el('h2', undefined, '关于'),
-    el('p', 'desc', `元神助手 v${chrome.runtime.getManifest().version} · 开源扫雷网辅助工具`),
-  )
-
-  const repoRow = el('div', 'setting-row')
-  repoRow.append(
-    el('span', 'setting-label', '仓库'),
-    externalLink('github.com/LockhartANR/yuanshen-helper ↗', REPO_URL),
-  )
-
-  const devRow = el('div', 'setting-row')
-  const devLinks = el('div', 'about-links')
-  for (const item of DEVELOPER_LINKS) {
-    devLinks.append(externalLink(`${item.label} ↗`, item.url))
-  }
-  devRow.append(el('span', 'setting-label', '开发者'), devLinks)
-
-  const siteRow = el('div', 'setting-row')
-  siteRow.append(el('span', 'setting-label', '站点'), externalLink('openms.top ↗', SITE_ORIGIN))
-
-  aboutCard.append(repoRow, devRow, siteRow)
+  const aboutCard = createAboutCard()
 
   const footer = el('footer', 'page-footer')
   footer.textContent = '问题和建议请提到仓库的 Issues。'

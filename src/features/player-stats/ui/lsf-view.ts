@@ -133,8 +133,6 @@ export function lsfStatsHtml(
     `<b>${formatLsf(range.latest)}</b>` +
     `<small>起点 ${formatLsf(range.baseline)} · 截至 ${untilLabel(bounds, range.end)}</small></div>` +
     '</div>' +
-    '<p class="lsf-tip">时段只作用于时段统计、阶梯图与流水；上面的定阶总览始终是当前完整快照。' +
-    '选更短的时段时，区间起点会变成该时段开始前的累计 LSF，所以「时段涨分」通常小于总 LSF。</p>' +
     '</div>'
   )
 }
@@ -377,7 +375,7 @@ export function lsfLedgerHtml(options: {
   return (
     '<div class="card">' +
     '<div class="card-head"><h2 class="card-title">变动流水</h2>' +
-    `<span class="muted">时间倒序 · 只列出引起 LSF 变化的录像 · 共 ${options.events.length} 条` +
+    `<span class="muted">时间倒序 · 共 ${options.events.length} 条` +
     `${remaining > 0 ? ` · 已显示 ${shown.length} 条` : ''}</span></div>` +
     '<div class="table-scroll"><table class="data-table lsf-ledger">' +
     '<thead><tr><th>时间</th><th>级别 / 方式</th><th class="num">成绩</th><th class="num">LSF</th>' +
@@ -387,7 +385,6 @@ export function lsfLedgerHtml(options: {
     (remaining > 0
       ? `<div class="lsf-more"><button type="button" class="button" data-lsf-more>显示更多（还有 ${remaining} 条）</button></div>`
       : '') +
-    '<p class="lsf-tip">一条录像只生成一条事件；本身不改变 LSF 的录像不在流水里。来源贡献与总差值按未舍入数值计算，显示按两位小数四舍五入，可能相差 ±0.01。</p>' +
     '</div>'
   )
 }

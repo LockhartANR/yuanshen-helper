@@ -950,16 +950,6 @@ body {
   min-height: 360px;
 }
 
-.analysis-note {
-  margin: 18px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.analysis-note + .analysis-note {
-  margin-top: 4px;
-}
-
 .anchor-error {
   color: #c0392b;
 }
@@ -2007,8 +1997,9 @@ button.cal-cell:focus-visible {
   min-height: 300px;
 }
 
-.player-page-embedded .analysis-note {
-  margin-top: 12px;
+.player-page-embedded .about-card {
+  margin-bottom: 0;
+  padding: 14px 16px;
 }
 
 /* ---- 梁山分与定阶总览 ---- */

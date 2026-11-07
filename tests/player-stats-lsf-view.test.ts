@@ -156,7 +156,9 @@ describe('时段统计', () => {
     expect(html).toContain('该时段没有正向日增量')
     expect(html).toContain('区间末 LSF − 区间起点 LSF')
     expect(html).not.toContain('含扣分')
-    expect(html).toContain('时段只作用于时段统计、阶梯图与流水')
+    expect(html).not.toContain('时段只作用于时段统计、阶梯图与流水')
+    expect(html).not.toContain('「时段涨分」通常小于总 LSF')
+    expect(html).not.toContain('lsf-tip')
     expect(html).not.toContain('没有任何数据')
 
     // 时段切换就在这张卡上，和顶部筛选条共用十二个选项。
@@ -335,7 +337,11 @@ describe('变动流水', () => {
     expect(ledger).toContain('展开')
     expect(ledger).toContain('时间</th><th>级别 / 方式</th>')
     expect(ledger).toContain('来源')
-    expect(ledger).toContain('一条录像只生成一条事件')
+    expect(ledger).toContain(`时间倒序 · 共 ${events.length} 条`)
+    expect(ledger).not.toContain('只列出引起 LSF 变化的录像')
+    expect(ledger).not.toContain('一条录像只生成一条事件')
+    expect(ledger).not.toContain('可能相差 ±0.01')
+    expect(ledger).not.toContain('lsf-tip')
     expect((ledger.match(/class="lsf-row/g) ?? []).length).toBe(events.length)
   })
 
