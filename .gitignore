@@ -5,6 +5,7 @@ release/
 .tmp/
 .tmp*
 coverage/
+.workbuddy/
 docs/preview/
 *.log
 .DS_Store

@@ -28,6 +28,8 @@
 
 ## 下载
 
+简明操作步骤见[元神助手使用说明](openms.md)。
+
 最新版本见 [GitHub Releases](../../releases/latest)。
 
 下载 `yuanshen-helper-<version>.zip`，解压后按下方安装步骤加载。也可以从源码构建（见「方式二」）。
