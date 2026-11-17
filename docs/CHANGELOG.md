@@ -2,6 +2,12 @@
 
 按版本记录面向用户的功能变化。各版本安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/LockhartANR/yuanshen-helper/releases)。
 
+## 未发布
+
+### 修复
+
+- 适配站点新的录像上传接口地址，修复旧地址返回 404 导致的自动上传失败
+
 ## 1.4.0 — 2026-11-07
 
 ### 新增

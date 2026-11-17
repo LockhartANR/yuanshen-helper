@@ -6,7 +6,7 @@ async function uploadReplay(name: string, data: string): Promise<UploadRawRespon
   const form = new FormData()
   form.append('file', new File([bytes], name, { type: 'application/octet-stream' }))
 
-  const response = await fetch('/common/uploadvideo/', {
+  const response = await fetch('/api/common/uploadvideo', {
     method: 'POST',
     body: form,
     credentials: 'same-origin',
