@@ -2,7 +2,7 @@
 
 按版本记录面向用户的功能变化。各版本安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/LockhartANR/yuanshen-helper/releases)。
 
-## 未发布
+## 1.5.0 — 2026-11-19
 
 ### 新增
 
