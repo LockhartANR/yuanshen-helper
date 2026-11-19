@@ -9,7 +9,7 @@ import {
   saveSettings,
   type Settings,
 } from '../../shared/settings'
-import { brandLogo, el, errorMessage } from '../../shared/ui'
+import { brandLogo, el, errorMessage, rankingPageUrl } from '../../shared/ui'
 import {
   DEFAULT_SYNC_META,
   clearAllData,
@@ -54,8 +54,12 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   uploadLink.href = chrome.runtime.getURL('upload.html')
   uploadLink.target = '_blank'
   uploadLink.rel = 'noreferrer'
+  const rankingLink = el('a', 'site-link', '自定义排行榜 ↗') as HTMLAnchorElement
+  rankingLink.href = rankingPageUrl()
+  rankingLink.target = '_blank'
+  rankingLink.rel = 'noreferrer'
   const links = el('div', 'header-links')
-  links.append(uploadLink, siteLink)
+  links.append(rankingLink, uploadLink, siteLink)
   header.append(brand, links)
 
   const featureCard = el('section', 'card')

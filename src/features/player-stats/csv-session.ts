@@ -24,6 +24,7 @@ import type {
   CsvFileHandle,
   CsvLoadedSource,
   CsvPermissionState,
+  CsvRepairRequest,
   CsvSourceRecord,
   CsvScopeGuard,
   CsvSourceRegistry,
@@ -32,6 +33,7 @@ import type {
 } from './csv-sources'
 import type { CsvRecord } from './csv'
 import type { Video } from './model'
+import { withCsvTimeout } from './csv-timeout'
 
 /** 添加 / 重新关联的结果，供视图决定是否自动切到 CSV。 */
 export type CsvOperationResult = 'success' | 'cancelled' | 'failed'
@@ -51,6 +53,10 @@ export interface CsvSessionState {
   /** 关联清单是否已经从数据库（或内存清单）恢复。 */
   ready: boolean
   sources: CsvSourceRecord[]
+  /** 当前可用的文件句柄，按 sourceId 保存；缺失说明需要修复关联。 */
+  handles: Map<string, CsvFileHandle>
+  /** 无法读取或缺少句柄的来源；界面据此提供「修复文件关联」。 */
+  problemSources: string[]
   revision: number
   /** 本页已加载的来源快照，按 sourceId 保存。 */
   loaded: Map<string, CsvLoadedSource>
@@ -80,6 +86,12 @@ export interface CsvRelinkBasis {
   sourceRevision?: number
 }
 
+/** 批量修复依据的清单 / 来源版本；用户选择文件期间变化则整批不提交。 */
+export interface CsvRepairBasis {
+  registryRevision: number
+  sourceRevisions: Map<string, number>
+}
+
 export interface CsvSession {
   readonly state: CsvSessionState
   restore(): Promise<void>
@@ -91,6 +103,12 @@ export interface CsvSession {
     exclusionScopeId?: string | null,
     basis?: CsvRelinkBasis,
     scopeGuard?: CsvScopeGuard,
+  ): Promise<CsvOperationResult>
+  /** 一次修复多个异常来源；所有文件读取成功后才提交，失败整批不写。 */
+  repair(
+    inputs: readonly CsvRepairRequest[],
+    basis: CsvRepairBasis,
+    scopeGuards?: readonly CsvScopeGuard[],
   ): Promise<CsvOperationResult>
   removeSource(sourceId: string): Promise<void>
   removeAll(): Promise<void>
@@ -105,6 +123,8 @@ export interface CsvSession {
   loadedSources(): CsvLoadedSource[]
   loadedCount(): number
   sourceSummary(sourceId: string): CsvSourceSummary | null
+  /** 当前来源可用的文件句柄；缺失时为 null。 */
+  handleFor(sourceId: string): CsvFileHandle | null
   destroy(): void
 }
 
@@ -113,10 +133,26 @@ function describeFailure(error: unknown): string {
   return errorMessage(error)
 }
 
+/** 关联存储必须有明确结束；超时后同一流程的晚到提交按失效处理。 */
+const CSV_STORE_TIMEOUT_MS = 15_000
+
+function withStoreTimeout<T>(
+  task: Promise<T>,
+  action: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  return withCsvTimeout(task, CSV_STORE_TIMEOUT_MS, () => {
+    onTimeout?.()
+    throw new Error(`${action}超时，浏览器未返回；原关联和成绩保持不变`)
+  })
+}
+
 export function createCsvSession(options: CsvSessionOptions): CsvSession {
   const state: CsvSessionState = {
     ready: false,
     sources: [],
+    handles: new Map(),
+    problemSources: [],
     revision: 0,
     loaded: new Map(),
     loading: false,
@@ -173,7 +209,10 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     return state.sources.find((source) => source.sourceId === sourceId)?.lastSuccess ?? null
   }
 
-  function adopt(registry: CsvSourceRegistry): void {
+  function adopt(
+    registry: CsvSourceRegistry,
+    handles: Map<string, CsvFileHandle> = state.handles,
+  ): void {
     const before = state.sources.map((source) => source.sourceId).join('|')
     const after = registry.sources.map((source) => source.sourceId).join('|')
     let changed = before !== after
@@ -187,9 +226,37 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       }
     }
     state.needsPermission = state.needsPermission.filter((sourceId) => byId.has(sourceId))
+    state.handles = new Map(
+      [...handles].filter(([sourceId]) => byId.has(sourceId)),
+    )
+    state.problemSources = registry.sources
+      .filter((source) => !state.handles.has(source.sourceId))
+      .map((source) => source.sourceId)
     state.sources = registry.sources
     state.revision = registry.revision
     if (changed) state.snapshotVersion += 1
+  }
+
+  /** 清单与句柄分开读取；迁移未完成时由 store 自行回退旧记录。 */
+  async function loadRegistry(): Promise<{
+    registry: CsvSourceRegistry
+    handles: Map<string, CsvFileHandle>
+  }> {
+    const [registry, handles] = await withStoreTimeout(
+      Promise.all([options.store.load(), options.store.handles()]),
+      '读取 CSV 关联',
+    )
+    return { registry, handles }
+  }
+
+  function markProblem(sourceId: string): void {
+    if (!state.problemSources.includes(sourceId)) {
+      state.problemSources = [...state.problemSources, sourceId]
+    }
+  }
+
+  function clearProblem(sourceId: string): void {
+    state.problemSources = state.problemSources.filter((id) => id !== sourceId)
   }
 
   function invalidate(): number {
@@ -206,9 +273,9 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     if (state.ready || disposed) return
     const request = version
     try {
-      const registry = await options.store.load()
+      const { registry, handles } = await loadRegistry()
       if (disposed || request !== version) return
-      adopt(registry)
+      adopt(registry, handles)
       state.ready = true
     } catch (error) {
       if (disposed || request !== version) return
@@ -220,13 +287,34 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
 
   async function refreshAll(): Promise<void> {
     if (state.loading || disposed) return
-    if (!state.ready) await restore()
-    if (disposed) return
     const request = invalidate()
-
-    let registry: CsvSourceRegistry
+    state.loading = true
+    state.progress = null
+    state.message = '正在检查 CSV 关联…'
+    state.errors = []
+    notify()
     try {
-      registry = await options.store.load()
+      if (!state.ready) await restore()
+      if (disposed || request !== version) return
+      await refreshBatch(request)
+    } catch (error) {
+      if (disposed || request !== version) return
+      state.message = `刷新失败：${errorMessage(error)}。已保留上次成功结果。`
+    } finally {
+      if (!disposed && request === version && state.loading) {
+        stopLoading()
+        notify()
+      }
+    }
+  }
+
+  async function refreshBatch(request: number): Promise<void> {
+    let registry: CsvSourceRegistry
+    let handles: Map<string, CsvFileHandle>
+    try {
+      const loaded = await loadRegistry()
+      registry = loaded.registry
+      handles = loaded.handles
     } catch (error) {
       if (request !== version) return
       state.message = `读取 CSV 关联失败：${errorMessage(error)}`
@@ -234,7 +322,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       return
     }
     if (request !== version) return
-    adopt(registry)
+    adopt(registry, handles)
     if (state.sources.length === 0) {
       state.message = '还没有关联 CSV 文件，请先添加。'
       notify()
@@ -243,12 +331,31 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
 
     // 先检查权限：需要授权的文件不在后台弹框，由用户点「授权读取」。
     const pending: string[] = []
+    const missing: string[] = []
     for (const source of state.sources) {
-      const permission = await queryPermission(source.handle)
+      const handle = state.handles.get(source.sourceId)
+      if (!handle) {
+        // 句柄记录缺失（旧数据或写入失败）：不阻断其他文件，也不猜测路径。
+        missing.push(source.name)
+        markProblem(source.sourceId)
+        continue
+      }
+      state.message = `正在检查读取权限：${source.name}…`
+      notify()
+      const permission = await queryPermission(handle)
       if (request !== version) return
-      if (!isPermissionGranted(permission)) pending.push(source.sourceId)
+      // 查询不返回不等于没有读取权限。getFile() 仍由浏览器校验权限，
+      // 不会自动弹授权框；超时时继续实际读取，以读取结果为准。
+      if (!isPermissionGranted(permission) && permission !== 'timeout') {
+        pending.push(source.sourceId)
+      }
     }
     state.needsPermission = pending
+    if (missing.length > 0) {
+      state.message = `${missing.join('、')} 的文件关联不可用，请点击「修复文件关联」重新选择文件；其他成绩和排除规则保留。`
+      notify()
+      return
+    }
     if (pending.length > 0) {
       state.message = `${pending.length} 个文件需要授权读取：点击文件行的「授权读取」，全部完成后再次点击「刷新」。`
       notify()
@@ -274,8 +381,12 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     const failed: string[] = []
     let done = 0
     for (const source of state.sources) {
+      state.message = `正在读取：${source.name}…`
+      notify()
       try {
-        const result = await read(source.handle, now())
+        const handle = state.handles.get(source.sourceId)
+        if (!handle) throw new CsvFileError('文件关联不可用，请修复文件关联', 'not-found')
+        const result = await read(handle, now())
         if (request !== version) return
         staged.push({
           sourceId: source.sourceId,
@@ -285,12 +396,14 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
           records: result.records,
           summary: result.summary,
         })
+        clearProblem(source.sourceId)
         for (const error of result.errors) {
           errors.push(`${source.name} 第 ${error.line} 行：${error.message}`)
         }
       } catch (error) {
         if (request !== version) return
         failed.push(`${source.name}：${describeFailure(error)}`)
+        markProblem(source.sourceId)
         if (error instanceof CsvFileError && error.code === 'permission') {
           state.needsPermission = [...new Set([...state.needsPermission, source.sourceId])]
         }
@@ -311,10 +424,17 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
 
     const summaries = new Map(staged.map((source) => [source.sourceId, source.summary]))
     let committed: CsvSourceRegistry | null
+    let commitAbandoned = false
     try {
       // 事务内再检查一次批次是否仍有效，取消后不能再写回摘要。
-      committed = await options.store.commit(state.revision, summaries, () =>
-        request === version && !disposed,
+      committed = await withStoreTimeout(
+        options.store.commit(state.revision, summaries, () =>
+          request === version && !disposed && !commitAbandoned,
+        ),
+        '保存读取结果',
+        () => {
+          commitAbandoned = true
+        },
       )
     } catch (error) {
       if (request !== version) return
@@ -328,15 +448,15 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     if (!committed) {
       // 其他页面改过清单：采用新清单，等用户重新刷新，不能拿旧清单覆盖。
       stopLoading()
-      let fresh: CsvSourceRegistry | null = null
+      let fresh: { registry: CsvSourceRegistry; handles: Map<string, CsvFileHandle> } | null = null
       try {
-        fresh = await options.store.load()
+        fresh = await loadRegistry()
       } catch {
         // 读不到就保持原清单，提示仍然有效。
       }
       // 读取清单期间可能又被移除全部 / 取消 / 切源，旧结果必须丢弃。
       if (request !== version) return
-      if (fresh) adopt(fresh)
+      if (fresh) adopt(fresh.registry, fresh.handles)
       state.snapshotVersion += 1
       state.errors = errors
       state.message = '关联清单已在其他页面变化，请重新刷新。'
@@ -404,7 +524,10 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     excludeSourceId?: string,
   ): Promise<boolean> {
     const candidates = [
-      ...state.sources.filter((source) => source.sourceId !== excludeSourceId).map((source) => source.handle),
+      ...state.sources
+        .filter((source) => source.sourceId !== excludeSourceId)
+        .map((source) => state.handles.get(source.sourceId))
+        .filter((handle): handle is CsvFileHandle => Boolean(handle)),
       ...staged.map((item) => item.input.handle),
     ]
     for (const candidate of candidates) {
@@ -416,7 +539,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
   async function ensureReadable(handle: CsvFileHandle, request: number): Promise<boolean> {
     const permission = await queryPermission(handle)
     if (request !== version) return false
-    if (isPermissionGranted(permission)) return true
+    if (isPermissionGranted(permission) || permission === 'timeout') return true
     const granted = await requestPermission(handle)
     return request === version && isPermissionGranted(granted)
   }
@@ -426,11 +549,17 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     if (!state.ready) await restore()
     if (disposed) return 'cancelled'
     const request = invalidate()
-    const current = (): boolean => request === version && !disposed
+    // abandoned 只由存储超时置位：晚到提交按失效处理，但本次流程仍要报告超时原因。
+    let abandoned = false
+    const mine = (): boolean => request === version && !disposed
+    const current = (): boolean => mine() && !abandoned
 
     let registry: CsvSourceRegistry
+    let handleMap: Map<string, CsvFileHandle>
     try {
-      registry = await options.store.load()
+      const loaded = await loadRegistry()
+      registry = loaded.registry
+      handleMap = loaded.handles
     } catch (error) {
       if (!current()) return 'cancelled'
       state.message = `读取 CSV 关联失败：${errorMessage(error)}`
@@ -438,7 +567,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       return 'failed'
     }
     if (!current()) return 'cancelled'
-    adopt(registry)
+    adopt(registry, handleMap)
     state.deltas.clear()
 
     state.loading = true
@@ -493,8 +622,14 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       let committed: CsvSourceRegistry | null = null
       let accepted = staged
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        committed = await options.store.addMany(
-          accepted.map((item) => item.input), registry.revision, current,
+        committed = await withStoreTimeout(
+          options.store.addMany(
+            accepted.map((item) => item.input), registry.revision, current,
+          ),
+          '保存文件关联',
+          () => {
+            abandoned = true
+          },
         )
         if (!current()) return 'cancelled'
         if (committed) break
@@ -505,14 +640,16 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
 
         // 只重试一次，先读取新清单并重新判断身份，不能直接重放旧提交。
         try {
-          registry = await options.store.load()
+          const loaded = await loadRegistry()
+          registry = loaded.registry
+          handleMap = loaded.handles
         } catch (error) {
           if (!current()) return 'cancelled'
           state.message = `读取 CSV 关联失败：${errorMessage(error)}`
           return 'failed'
         }
         if (!current()) return 'cancelled'
-        adopt(registry)
+        adopt(registry, handleMap)
         accepted = []
         for (const item of staged) {
           try {
@@ -532,7 +669,9 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       }
       if (!committed) return 'failed'
 
-      adopt(committed)
+      const nextHandles = new Map(state.handles)
+      for (const item of accepted) nextHandles.set(item.input.sourceId, item.input.handle)
+      adopt(committed, nextHandles)
       const byId = new Map(committed.sources.map((source) => [source.sourceId, source]))
       const added: CsvLoadedSource[] = []
       for (const item of accepted) {
@@ -556,11 +695,14 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       }
       return added.length > 0 ? 'success' : 'failed'
     } catch (error) {
-      if (!current()) return 'cancelled'
-      state.message = `保存关联失败：${errorMessage(error)}。原关联和成绩保持不变。`
+      // 超时同样要如实报告：abandoned 只让晚到提交失效，不代表用户取消了操作。
+      if (!mine()) return 'cancelled'
+      state.message = abandoned
+        ? `保存文件关联失败：${errorMessage(error)}`
+        : `保存关联失败：${errorMessage(error)}。原关联和成绩保持不变。`
       return 'failed'
     } finally {
-      if (current()) {
+      if (mine()) {
         stopLoading()
         notify()
       }
@@ -600,11 +742,17 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     if (!state.ready) await restore()
     if (disposed) return 'cancelled'
     const request = invalidate()
-    const current = (): boolean => request === version && !disposed
+    // abandoned 只由存储超时置位：晚到提交按失效处理，但本次流程仍要报告超时原因。
+    let abandoned = false
+    const mine = (): boolean => request === version && !disposed
+    const current = (): boolean => mine() && !abandoned
 
     let registry: CsvSourceRegistry
     try {
-      registry = await options.store.load()
+      const loaded = await loadRegistry()
+      registry = loaded.registry
+      if (!current()) return 'cancelled'
+      adopt(registry, loaded.handles)
     } catch (error) {
       if (!current()) return 'cancelled'
       state.message = `读取 CSV 关联失败：${errorMessage(error)}`
@@ -612,7 +760,6 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       return 'failed'
     }
     if (!current()) return 'cancelled'
-    adopt(registry)
     const source = state.sources.find((item) => item.sourceId === sourceId)
     if (!source) {
       state.message = '该文件已在其他页面移除，请刷新关联清单。'
@@ -649,32 +796,41 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       }
       const result = await read(handle, now())
       if (!current()) return 'cancelled'
-      const next = await options.store.relink(
-        sourceId,
-        handle,
-        result.summary,
-        basis?.registryRevision ?? registry.revision,
-        current,
-        exclusionScopeId ?? null,
-        basis?.sourceRevision,
-        scopeGuard,
+      const next = await withStoreTimeout(
+        options.store.relink(
+          sourceId,
+          handle,
+          result.summary,
+          basis?.registryRevision ?? registry.revision,
+          current,
+          exclusionScopeId ?? null,
+          basis?.sourceRevision,
+          scopeGuard,
+        ),
+        '保存文件关联',
+        () => {
+          abandoned = true
+        },
       )
       if (!current()) return 'cancelled'
       if (!next) {
-        let fresh: CsvSourceRegistry | null = null
+        let fresh: { registry: CsvSourceRegistry; handles: Map<string, CsvFileHandle> } | null = null
         try {
-          fresh = await options.store.load()
+          fresh = await loadRegistry()
         } catch {
           // 读不到也按冲突处理，至少不能继续使用旧来源。
         }
         if (!current()) return 'cancelled'
-        if (fresh) adopt(fresh)
-        state.message = fresh?.sources.some((item) => item.sourceId === sourceId)
+        if (fresh) adopt(fresh.registry, fresh.handles)
+        state.message = fresh?.registry.sources.some((item) => item.sourceId === sourceId)
           ? '关联清单或排除规则已在其他页面变化，请重新关联；原来源未改变。'
           : '该文件已在其他页面移除，原来源未改变。'
         return 'failed'
       }
-      adopt(next)
+      const nextHandles = new Map(state.handles)
+      nextHandles.set(sourceId, handle)
+      adopt(next, nextHandles)
+      clearProblem(sourceId)
       const record = next.sources.find((item) => item.sourceId === sourceId)
       if (!record) {
         state.message = '该文件已在其他页面移除，原来源未改变。'
@@ -696,11 +852,227 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
       if (!hasSnapshot()) state.message += ' 点击「刷新」加载全部成绩。'
       return 'success'
     } catch (error) {
-      if (!current()) return 'cancelled'
-      state.message = `重新关联失败：${describeFailure(error)}。原来源未改变。`
+      // 超时同样要如实报告：abandoned 只让晚到提交失效，不代表用户取消了操作。
+      if (!mine()) return 'cancelled'
+      state.message = abandoned
+        ? `重新关联失败：${describeFailure(error)}`
+        : `重新关联失败：${describeFailure(error)}。原来源未改变。`
       return 'failed'
     } finally {
       if (request === version) {
+        stopLoading()
+        notify()
+      }
+    }
+  }
+
+  /**
+   * 批量修复：本批新句柄彼此去重、与未修复来源核对后，完整读取全部文件，
+   * 再在事务内一次提交清单、句柄和作用域绑定。任一文件失败整批不写。
+   */
+  async function repair(
+    inputs: readonly CsvRepairRequest[],
+    basis: CsvRepairBasis,
+    scopeGuards?: readonly CsvScopeGuard[],
+  ): Promise<CsvOperationResult> {
+    if (state.loading || disposed || inputs.length === 0) return 'cancelled'
+    if (!state.ready) await restore()
+    if (disposed) return 'cancelled'
+    const request = invalidate()
+    // abandoned 只由存储超时置位：晚到提交按失效处理，但本次流程仍要报告超时原因。
+    let abandoned = false
+    const mine = (): boolean => request === version && !disposed
+    const current = (): boolean => mine() && !abandoned
+
+    let registry: CsvSourceRegistry
+    let handleMap: Map<string, CsvFileHandle>
+    try {
+      const loaded = await loadRegistry()
+      registry = loaded.registry
+      handleMap = loaded.handles
+    } catch (error) {
+      if (!current()) return 'cancelled'
+      state.message = `读取 CSV 关联失败：${errorMessage(error)}`
+      notify()
+      return 'failed'
+    }
+    if (!current()) return 'cancelled'
+    adopt(registry, handleMap)
+    if (registry.revision !== basis.registryRevision) {
+      state.message = '关联清单已在其他页面变化，请重新开始修复；原关联未改变。'
+      notify()
+      return 'failed'
+    }
+    const repairing = new Set(inputs.map((input) => input.sourceId))
+    for (const input of inputs) {
+      const source = state.sources.find((item) => item.sourceId === input.sourceId)
+      if (!source) {
+        state.message = '待修复来源已在其他页面移除；原关联未改变。'
+        notify()
+        return 'failed'
+      }
+      const expected = basis.sourceRevisions.get(input.sourceId)
+      if (expected !== undefined && source.revision !== expected) {
+        state.message = `「${source.name}」已在其他页面重新关联，请重新开始修复；原关联未改变。`
+        notify()
+        return 'failed'
+      }
+    }
+
+    state.loading = true
+    state.progress = null
+    state.message = '正在校验文件身份…'
+    state.errors = []
+    notify()
+    const wasLoaded = new Set(
+      inputs.filter((input) => state.loaded.has(input.sourceId)).map((input) => input.sourceId),
+    )
+    try {
+      // 本批新句柄必须彼此指向不同文件，否则会出现同一份成绩被重复计入。
+      for (let left = 0; left < inputs.length; left += 1) {
+        for (let right = left + 1; right < inputs.length; right += 1) {
+          let same: boolean
+          try {
+            same = await isSameCsvHandle(inputs[left]!.handle, inputs[right]!.handle)
+          } catch (error) {
+            state.message = `文件身份检查未完成：${describeFailure(error)}。请重新选择文件；原关联未改变。`
+            return 'failed'
+          }
+          if (!current()) return 'cancelled'
+          if (same) {
+            state.message =
+              `「${inputs[left]!.handle.name}」和「${inputs[right]!.handle.name}」指向同一个文件，` +
+              '请分别为每个来源选择不同的文件；原关联未改变。'
+            return 'failed'
+          }
+        }
+      }
+
+      const remaining = state.sources.filter((source) => !repairing.has(source.sourceId))
+      // 未参与修复的来源仍用旧句柄核对；旧句柄缺失时无法确认，要求一并修复。
+      if (remaining.some((source) => !state.handles.has(source.sourceId))) {
+        state.message =
+          '还有其他来源缺少可用句柄，无法确认新选择的文件是否与它们重复；' +
+          '请把这些来源一并加入修复，或先移除；原关联未改变。'
+        return 'failed'
+      }
+      for (const input of inputs) {
+        for (const source of remaining) {
+          const oldHandle = state.handles.get(source.sourceId)
+          if (!oldHandle) continue
+          let same: boolean
+          try {
+            same = await isSameCsvHandle(input.handle, oldHandle)
+          } catch (error) {
+            state.message =
+              `文件身份检查未完成（${describeFailure(error)}）：` +
+              `无法确认「${input.handle.name}」是否与未修复来源「${source.name}」重复，` +
+              '请把这些来源一并修复；原关联未改变。'
+            return 'failed'
+          }
+          if (!current()) return 'cancelled'
+          if (same) {
+            state.message =
+              `「${input.handle.name}」与未修复来源「${source.name}」是同一个文件，` +
+              '请把这两个来源一并修复，或先移除其中一个；原关联未改变。'
+            return 'failed'
+          }
+        }
+      }
+
+      const reads = new Map<string, Awaited<ReturnType<typeof read>>>()
+      const errors: string[] = []
+      for (const input of inputs) {
+        state.message = `正在读取：${input.handle.name}…`
+        notify()
+        try {
+          const result = await read(input.handle, now())
+          if (!current()) return 'cancelled'
+          reads.set(input.sourceId, result)
+          for (const error of result.errors) {
+            errors.push(`${input.handle.name} 第 ${error.line} 行：${error.message}`)
+          }
+        } catch (error) {
+          if (!current()) return 'cancelled'
+          markProblem(input.sourceId)
+          state.errors = errors
+          state.message =
+            `修复失败：${input.handle.name}：${describeFailure(error)}。` +
+            '已保留原关联、上次成功统计和排除规则。'
+          return 'failed'
+        }
+      }
+
+      state.message = '正在保存文件关联…'
+      notify()
+      let committed: CsvSourceRegistry | null
+      try {
+        committed = await withStoreTimeout(
+          options.store.repair(
+            inputs.map((input) => ({
+              ...input,
+              summary: reads.get(input.sourceId)!.summary,
+              expectedSourceRevision: basis.sourceRevisions.get(input.sourceId),
+            })),
+            basis.registryRevision,
+            current,
+            scopeGuards,
+          ),
+          '保存文件关联',
+          () => {
+            abandoned = true
+          },
+        )
+      } catch (error) {
+        // 超时同样要如实报告：abandoned 只让晚到提交失效，不代表用户取消了操作。
+        if (!mine()) return 'cancelled'
+        state.errors = errors
+        state.message = abandoned
+          ? `保存文件关联失败：${errorMessage(error)}`
+          : `保存文件关联失败：${errorMessage(error)}。原关联和成绩保持不变。`
+        return 'failed'
+      }
+      if (!current()) return 'cancelled'
+      if (!committed) {
+        let fresh: { registry: CsvSourceRegistry; handles: Map<string, CsvFileHandle> } | null = null
+        try {
+          fresh = await loadRegistry()
+        } catch {
+          // 读不到也按冲突处理，不能拿旧清单覆盖。
+        }
+        if (!current()) return 'cancelled'
+        if (fresh) adopt(fresh.registry, fresh.handles)
+        state.message = '关联清单或排除规则已在其他页面变化，请重新开始修复；原关联未改变。'
+        return 'failed'
+      }
+
+      const nextHandles = new Map(state.handles)
+      for (const input of inputs) nextHandles.set(input.sourceId, input.handle)
+      adopt(committed, nextHandles)
+      for (const input of inputs) {
+        clearProblem(input.sourceId)
+        if (!wasLoaded.has(input.sourceId)) continue
+        const readResult = reads.get(input.sourceId)!
+        const record = committed.sources.find((item) => item.sourceId === input.sourceId)
+        if (!record) continue
+        state.loaded.set(input.sourceId, {
+          sourceId: input.sourceId,
+          sourceRevision: record.revision,
+          name: record.name,
+          videos: readResult.videos,
+          records: readResult.records,
+          summary: readResult.summary,
+        })
+      }
+      state.deltas.clear()
+      state.errors = errors
+      state.snapshotVersion += 1
+      const total = [...reads.values()].reduce((sum, result) => sum + result.videos.length, 0)
+      state.message = `已修复 ${inputs.length} 个文件关联：${formatCount(total)} 局。`
+      if (!hasSnapshot()) state.message += ' 点击「刷新」加载全部成绩。'
+      return 'success'
+    } finally {
+      if (mine()) {
         stopLoading()
         notify()
       }
@@ -712,7 +1084,10 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     const request = invalidate()
     const name = state.sources.find((source) => source.sourceId === sourceId)?.name ?? '文件'
     try {
-      const next = await options.store.remove(sourceId)
+      const next = await withStoreTimeout(
+        options.store.remove(sourceId),
+        '移除文件关联',
+      )
       if (request !== version) return
       adopt(next)
       state.loaded.delete(sourceId)
@@ -738,7 +1113,10 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     invalidate()
     stopLoading()
     try {
-      const registry = await options.store.clear()
+      const registry = await withStoreTimeout(
+        options.store.clear(),
+        '清空关联清单',
+      )
       adopt(registry)
       state.loaded.clear()
       state.deltas.clear()
@@ -756,13 +1134,36 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     if (state.loading || disposed) return
     const source = state.sources.find((item) => item.sourceId === sourceId)
     if (!source) return
-    const result = await requestPermission(source.handle)
-    state.needsPermission = state.needsPermission.filter((id) => id !== sourceId)
-    if (!isPermissionGranted(result)) {
-      state.message = `未获得 ${source.name} 的读取权限。`
+    const handle = state.handles.get(sourceId)
+    if (!handle) {
+      markProblem(sourceId)
+      state.message = `${source.name} 的文件关联不可用，请点击「修复文件关联」重新选择文件。`
       notify()
       return
     }
+    const request = version
+    state.loading = true
+    state.progress = null
+    state.message = `等待浏览器授权读取：${source.name}…若没有出现授权窗口，可取消后重新关联文件。`
+    notify()
+    let result: CsvPermissionState
+    try {
+      result = await requestPermission(handle)
+    } catch {
+      result = 'denied'
+    }
+    if (disposed || request !== version) return
+    stopLoading()
+    if (!isPermissionGranted(result)) {
+      state.needsPermission = [...new Set([...state.needsPermission, sourceId])]
+      markProblem(sourceId)
+      state.message = result === 'timeout'
+        ? `浏览器授权超时：${source.name}。请使用「修复文件关联」重新选择原文件；原统计和排除规则保留。`
+        : `未获得 ${source.name} 的读取权限。`
+      notify()
+      return
+    }
+    state.needsPermission = state.needsPermission.filter((id) => id !== sourceId)
     state.message =
       state.needsPermission.length === 0
         ? '所有文件已授权，点击「刷新」读取。'
@@ -784,8 +1185,11 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     const request = version
     const wasEmpty = state.sources.length === 0
     let registry: CsvSourceRegistry
+    let handles: Map<string, CsvFileHandle>
     try {
-      registry = await options.store.load()
+      const loaded = await loadRegistry()
+      registry = loaded.registry
+      handles = loaded.handles
     } catch {
       return
     }
@@ -793,7 +1197,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     // 多个检查乱序返回时，较早的检查不能把清单版本倒退回去。
     if (disposed || request !== version) return
     if (registry.revision <= state.revision) return
-    adopt(registry)
+    adopt(registry, handles)
     if (registry.sources.length === 0) {
       state.message = '关联清单已在其他页面变化。'
     } else if (wasEmpty) {
@@ -821,12 +1225,17 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     state.loading = false
   }
 
+  function handleFor(sourceId: string): CsvFileHandle | null {
+    return state.handles.get(sourceId) ?? null
+  }
+
   return {
     state,
     restore,
     refreshAll,
     addFiles,
     relink,
+    repair,
     removeSource,
     removeAll,
     grant,
@@ -839,6 +1248,7 @@ export function createCsvSession(options: CsvSessionOptions): CsvSession {
     loadedSources,
     loadedCount,
     sourceSummary,
+    handleFor,
     destroy,
   }
 }

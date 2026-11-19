@@ -97,6 +97,15 @@ export async function openLocalCsvTab(): Promise<void> {
   await chrome.tabs.create({ url: chrome.runtime.getURL(CSV_PLAYER_PAGE) })
 }
 
+export function rankingPageUrl(): string {
+  return chrome.runtime.getURL('ranking.html')
+}
+
+/** 打开独立全站排行榜页。 */
+export async function openRankingTab(): Promise<void> {
+  await chrome.tabs.create({ url: rankingPageUrl() })
+}
+
 export function openOptionsPage(): void {
   void chrome.runtime.openOptionsPage()
 }

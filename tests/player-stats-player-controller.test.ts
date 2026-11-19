@@ -3,14 +3,19 @@ import type { PlayerVideoRow } from '../src/shared/db'
 import { parseStatsCsv } from '../src/features/player-stats/csv'
 import { createPlayerController } from '../src/features/player-stats/player-controller'
 import type { CsvSession, CsvSessionState } from '../src/features/player-stats/csv-session'
-import { createMemoryCsvStore, readCsvFile } from '../src/features/player-stats/csv-sources'
+import { createMemoryCsvStore, buildCsvSnapshot, readCsvFile } from '../src/features/player-stats/csv-sources'
+import type { CsvLoadedSource } from '../src/features/player-stats/csv-sources'
+import type { CsvRepairTarget } from '../src/features/player-stats/player-controller'
 import type { ExclusionRule, ExclusionScopeRecord } from '../src/features/player-stats/statistics-exclusion'
 import {
   createMemoryExclusionStore,
 } from '../src/features/player-stats/statistics-exclusion-store'
 import type { StatisticsExclusionStore } from '../src/features/player-stats/statistics-exclusion-store'
 import {
+  buildCsvExclusionEntries,
+  createCsvRuleFromEntries,
   csvFingerprint,
+  csvScopeIdForSource,
   csvSequenceDigest,
   siteScopeId,
 } from '../src/features/player-stats/statistics-exclusion'
@@ -21,6 +26,8 @@ function fakeSession(overrides: Partial<CsvSession> = {}): CsvSession {
   const state: CsvSessionState = {
     ready: true,
     sources: [],
+    handles: new Map(),
+    problemSources: [],
     revision: 0,
     loaded: new Map(),
     loading: false,
@@ -37,6 +44,7 @@ function fakeSession(overrides: Partial<CsvSession> = {}): CsvSession {
     refreshAll: vi.fn(async () => {}),
     addFiles: vi.fn(async () => 'success' as const),
     relink: vi.fn(async () => 'success' as const),
+    repair: vi.fn(async () => 'success' as const),
     removeSource: vi.fn(async () => {}),
     removeAll: vi.fn(async () => {}),
     grant: vi.fn(async () => {}),
@@ -49,6 +57,7 @@ function fakeSession(overrides: Partial<CsvSession> = {}): CsvSession {
     loadedSources: () => [],
     loadedCount: () => 0,
     sourceSummary: () => null,
+    handleFor: () => null,
     destroy: vi.fn(),
     ...overrides,
   }
@@ -538,6 +547,91 @@ describe('玩家页面控制器：统计排除', () => {
     ])
     expect(confirmRelink).toHaveBeenCalledTimes(1)
     reopened.destroy()
+  })
+
+  it('句柄失效后按来源身份恢复原排除规则，并可在修复面板沿用', async () => {
+    const sourceId = 'csv-src-broken'
+    const sourceRevision = 3
+    const scopeId = csvScopeIdForSource(sourceId, sourceRevision)
+    const parsed = parseStatsCsv(csv(5000, 6000))
+    const loadedSource: CsvLoadedSource = {
+      sourceId,
+      sourceRevision,
+      name: '旧成绩.csv',
+      videos: parsed.videos,
+      records: parsed.records,
+      summary: {
+        readAt: 1,
+        validCount: 2,
+        totalRows: 2,
+        invalidRows: 0,
+        size: 10,
+        lastModified: 1,
+      },
+    }
+    const videos = buildCsvSnapshot([loadedSource])
+    const entries = buildCsvExclusionEntries(
+      [loadedSource],
+      videos,
+      new Map([[sourceId, scopeId]]),
+    )
+    const target = entries.find((entry) => entry.summary.timems === 5000)!
+    const rule = createCsvRuleFromEntries(scopeId, entries, target, 1)
+    // 旧数据只有作用域记录：来源清单没有显式绑定，句柄也已经失效。
+    const store = createMemoryExclusionStore([
+      {
+        scopeId,
+        kind: 'csv',
+        revision: 1,
+        owner: { kind: 'csv', name: '旧成绩.csv', sourceId },
+        rules: [rule],
+      },
+    ])
+    const session = fakeSession()
+    session.state.sources = [
+      {
+        sourceId,
+        name: '旧成绩.csv',
+        addedAt: 1,
+        revision: sourceRevision,
+        lastSuccess: null,
+      },
+    ]
+    session.state.revision = 4
+    session.state.problemSources = [sourceId]
+    session.state.loaded = new Map([[sourceId, loadedSource]])
+    session.state.snapshotVersion = 1
+    session.hasSnapshot = () => true
+    session.loadedSources = () => [loadedSource]
+    session.videos = () => videos
+
+    const confirmRepair = vi.fn(
+      async (_targets: readonly CsvRepairTarget[]) => 'cancel' as const,
+    )
+    const controller = createPlayerController({
+      launch: { kind: 'csv', initialPage: 'analysis' },
+      loadPlayer: vi.fn(async () => loaded()),
+      createCsvStore: () => createMemoryCsvStore(),
+      createCsvSession: () => session,
+      canRememberCsvFiles: () => true,
+      pickCsvFiles: vi.fn(async () => []),
+      createExclusionStore: () => store,
+      loadSiteNamespace: async () => 'https://openms.top',
+      confirmRepair,
+    })
+
+    await controller.start()
+    await vi.waitFor(() => expect(controller.getSnapshot().exclusion.ready).toBe(true))
+    // 没有句柄也能按来源 ID 与修订号认定规则归属，继续参与统计。
+    await vi.waitFor(() => expect(controller.getSnapshot().exclusion.excludedCount).toBe(1))
+    expect(controller.getSnapshot().videos.map((video) => video.timems)).toEqual([6000])
+
+    await controller.repairCsvSources()
+    expect(confirmRepair).toHaveBeenCalledTimes(1)
+    expect(confirmRepair.mock.calls[0]![0]).toEqual([
+      { sourceId, sourceName: '旧成绩.csv', ruleCount: 1 },
+    ])
+    controller.destroy()
   })
 
   it('沿用确认等待期间外部重新关联时拒绝旧确认，不覆盖新文件', async () => {

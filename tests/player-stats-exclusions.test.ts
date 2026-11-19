@@ -13,6 +13,8 @@ import {
   createCsvRuleFromEntries,
   createSiteExclusionRule,
   csvFingerprint,
+  csvScopeIdForSource,
+  csvScopeOrigin,
   evaluateCsvExclusions,
   evaluateSiteExclusions,
   normalizeSiteNamespace,
@@ -316,5 +318,16 @@ describe('统计排除：CSV 身份与匹配', () => {
     const kept = built.videos.filter((_, index) => !result.excludedCsvIndices.has(index))
     expect(kept.map((video) => video.id)).toEqual([-1, -3])
     expect(kept.map((video) => video.importOrder)).toEqual([0, 2])
+  })
+})
+
+describe('CSV 作用域来源身份', () => {
+  it('从作用域 ID 还原来源与修订号，格式不符时返回 null', () => {
+    const scopeId = csvScopeIdForSource('csv-abc', 3)
+    expect(csvScopeOrigin(scopeId)).toEqual({ sourceId: 'csv-abc', sourceRevision: 3 })
+    expect(csvScopeOrigin('csv|source-1')).toBeNull()
+    expect(csvScopeOrigin('csv|source-1|x')).toBeNull()
+    expect(csvScopeOrigin(`site|${encodeURIComponent('https://openms.top')}|16`)).toBeNull()
+    expect(csvScopeOrigin('')).toBeNull()
   })
 })

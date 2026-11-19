@@ -14,10 +14,17 @@ import {
 import type {
   CsvFileHandle,
   CsvLoadedSource,
+  CsvRepairRequest,
   CsvScopeGuard,
+  CsvSourceRecord,
 } from './csv-sources'
 import { createCsvSession } from './csv-session'
-import type { CsvRelinkBasis, CsvSession } from './csv-session'
+import type {
+  CsvOperationResult,
+  CsvRelinkBasis,
+  CsvRepairBasis,
+  CsvSession,
+} from './csv-session'
 import type { PlayerLaunch, PlayerPage } from './launch'
 import type { DatasetSnapshot, Video } from './model'
 import { launchMode } from './player-state'
@@ -35,6 +42,7 @@ import {
   createCsvRuleFromEntries,
   createSiteExclusionRule,
   csvScopeIdForSource,
+  csvScopeOrigin,
   evaluateCsvExclusions,
   evaluateSiteExclusions,
   normalizeSiteNamespace,
@@ -74,6 +82,26 @@ export interface CsvRelinkChoice {
   ruleCount: number
 }
 
+/** 批量修复时一个待处理的原来源。 */
+export interface CsvRepairTarget {
+  sourceId: string
+  sourceName: string
+  ruleCount: number
+}
+
+export type CsvRepairIdentity = 'same' | 'different' | 'unknown'
+
+export interface CsvRepairPick {
+  handle: CsvFileHandle
+  /** 与旧句柄的身份比较结果；无法比较时为 unknown，不能静默沿用规则。 */
+  identity: CsvRepairIdentity
+}
+
+export interface CsvRepairDecision {
+  sourceId: string
+  mode: 'inherit' | 'new'
+}
+
 interface CsvRelinkCapture {
   scopeId: string | null
   basis: CsvRelinkBasis
@@ -101,6 +129,14 @@ export interface PlayerControllerOptions {
   now?: () => number
   /** 重新关联到不同文件时，由视图让用户选择沿用原规则或作为新来源。 */
   confirmRelink?: (choice: CsvRelinkChoice) => Promise<CsvRelinkMode>
+  /**
+   * 批量修复：视图为每个来源提供“选择文件”按钮（保留用户手势），
+   * 再让用户逐来源选择沿用原规则或作为新来源。
+   */
+  confirmRepair?: (
+    targets: readonly CsvRepairTarget[],
+    pick: (sourceId: string) => Promise<CsvRepairPick | null>,
+  ) => Promise<CsvRepairDecision[] | 'cancel'>
 }
 
 export interface PlayerController {
@@ -116,6 +152,8 @@ export interface PlayerController {
   enterCsvSource(): Promise<void>
   addCsvFiles(): Promise<void>
   relinkCsvSource(sourceId: string): Promise<void>
+  /** 批量修复缺少句柄或读取失败的来源；失败时整批不提交。 */
+  repairCsvSources(): Promise<void>
   removeCsvSource(sourceId: string): Promise<void>
   removeAllCsv(): Promise<void>
   refreshCsv(): Promise<void>
@@ -239,6 +277,12 @@ export function createPlayerController(options: PlayerControllerOptions): Player
   let exclusionRefreshVersion = 0
   let csvBindVersion = 0
   let lastCsvSourceKey = ''
+  /**
+   * 修复关联或沿用规则重新关联期间暂缓发布统计：作用域里的文件身份引用与清单
+   * 在同一事务里替换，事务提交后要重读规则（修订号已提升）再发布，避免用过期的
+   * owner 写回整个作用域。
+   */
+  let deferCsvPublish = false
   let csvBindings = new Map<string, string>()
   /** 降级模式没有可靠文件身份，只能按用户明确选择记住本次绑定。 */
   const manualCsvBindings = new Map<
@@ -276,6 +320,9 @@ export function createPlayerController(options: PlayerControllerOptions): Player
     store: createStore(persistentCsv),
     onChange: () => {
       if (destroyed) return
+      // 文件会话的进度与提示不等待排除规则匹配或锚点提交。
+      // emit 使用的统计数据仍是已发布快照。
+      emit()
       void handleCsvSessionChange()
     },
   })
@@ -1039,14 +1086,34 @@ export function createPlayerController(options: PlayerControllerOptions): Player
       next.set(source.sourceId, scope.scopeId)
       used.add(scope.scopeId)
     }
+    // 旧来源没有显式绑定、句柄又已失效时，作用域 ID 仍记录着来源与修订号；
+    // 修订号一致说明仍是同一个文件，可作为可核验的历史依据恢复绑定。
     for (const source of sources) {
       if (next.has(source.sourceId)) continue
+      for (const scope of scopes) {
+        if (used.has(scope.scopeId)) continue
+        const origin = csvScopeOrigin(scope.scopeId)
+        if (!origin || origin.sourceId !== source.sourceId) continue
+        if (origin.sourceRevision !== source.revision) continue
+        if (scope.owner.kind === 'csv' && scope.owner.sourceId) {
+          // owner 与 scopeId 互相印证；不一致时不猜测归属。
+          if (scope.owner.sourceId !== origin.sourceId) continue
+        }
+        next.set(source.sourceId, scope.scopeId)
+        used.add(scope.scopeId)
+        break
+      }
+    }
+    for (const source of sources) {
+      if (next.has(source.sourceId)) continue
+      const sourceHandle = session.handleFor(source.sourceId)
+      if (!sourceHandle) continue
       for (const scope of scopes) {
         if (used.has(scope.scopeId)) continue
         const owner = scope.owner
         if (owner.kind !== 'csv' || !owner.handle) continue
         try {
-          if (await isSameCsvHandle(source.handle, owner.handle)) {
+          if (await isSameCsvHandle(sourceHandle, owner.handle)) {
             next.set(source.sourceId, scope.scopeId)
             used.add(scope.scopeId)
             break
@@ -1074,6 +1141,11 @@ export function createPlayerController(options: PlayerControllerOptions): Player
     if (source !== 'csv') {
       emit()
       return true
+    }
+    if (deferCsvPublish) {
+      // 修复 / 沿用规则会同时替换清单与规则作用域里的句柄；等提交并重读规则后再发布。
+      emit()
+      return false
     }
     const token = ++csvBindVersion
     const flow = sourceFlow
@@ -1189,11 +1261,14 @@ export function createPlayerController(options: PlayerControllerOptions): Player
       confirmed: false,
     }
     if (!record) return capture
+    const oldHandle = session.handleFor(sourceId)
     let same = false
-    try {
-      same = await isSameCsvHandle(handle, record.handle)
-    } catch {
-      // 无法确认身份时也按不同文件处理，交给用户明确选择。
+    if (oldHandle) {
+      try {
+        same = await isSameCsvHandle(handle, oldHandle)
+      } catch {
+        // 无法确认身份时也按不同文件处理，交给用户明确选择。
+      }
     }
     if (same) return capture
     // 没有可沿用的规则时不存在歧义，直接作为新来源；不额外打断用户。
@@ -1269,6 +1344,13 @@ export function createPlayerController(options: PlayerControllerOptions): Player
           scopeGuard = {
             scopeId,
             revision,
+            // 沿用规则到新文件：同一个事务里把作用域的文件身份换成新句柄。
+            owner: {
+              kind: 'csv',
+              name: handles[0]!.name,
+              handle: persistentCsv ? handles[0]! : undefined,
+              sourceId: selection.sourceId,
+            },
             verify: async () =>
               !destroyed &&
               selection.flow === csvFlow &&
@@ -1291,16 +1373,31 @@ export function createPlayerController(options: PlayerControllerOptions): Player
     scopeGuard?: CsvScopeGuard,
   ): Promise<void> {
     if (destroyed || selection.flow !== csvFlow || handles.length === 0) return
-    const result = selection.kind === 'add'
-      ? await session.addFiles(handles)
-      : await session.relink(
-          selection.sourceId,
-          handles[0]!,
-          exclusionScopeId,
-          basis ?? undefined,
-          scopeGuard,
-        )
-    if (destroyed || selection.flow !== csvFlow || result !== 'success') return
+    // 沿用规则到新文件时，作用域句柄与清单在同一事务里替换，发布要等重读规则之后。
+    const rebinding = selection.kind === 'relink' && exclusionScopeId !== null
+    let result: CsvOperationResult
+    if (rebinding) deferCsvPublish = true
+    try {
+      result =
+        selection.kind === 'add'
+          ? await session.addFiles(handles)
+          : await session.relink(
+              selection.sourceId,
+              handles[0]!,
+              exclusionScopeId,
+              basis ?? undefined,
+              scopeGuard,
+            )
+    } finally {
+      if (rebinding) deferCsvPublish = false
+    }
+    if (destroyed || selection.flow !== csvFlow) return
+    if (result === 'success' && rebinding) {
+      const ready = await loadExclusions()
+      if (destroyed || selection.flow !== csvFlow) return
+      if (ready) await handleCsvSessionChange(true)
+    }
+    if (result !== 'success') return
     if (selection.kind === 'relink') {
       channel?.postMessage({ type: 'csv-changed' })
       if (source === 'csv') {
@@ -1341,6 +1438,141 @@ export function createPlayerController(options: PlayerControllerOptions): Player
     await selectCsvFiles({ kind: 'relink', flow, sourceId })
   }
 
+  /**
+   * 批量修复缺少句柄 / 读取失败的来源。文件选择由视图逐行触发以保留用户手势；
+   * 读取、身份校验和事务提交由会话统一完成，任一环节失败整批不写。
+   */
+  async function repairCsvSources(): Promise<void> {
+    if (destroyed || session.state.loading) return
+    const flow = invalidateCsvFlow()
+    if (!session.state.ready) await session.restore()
+    if (destroyed || flow !== csvFlow || session.state.loading) return
+
+    const targets = session.state.problemSources
+      .map((sourceId) => session.state.sources.find((source) => source.sourceId === sourceId))
+      .filter((source): source is CsvSourceRecord => Boolean(source))
+    if (targets.length === 0) {
+      session.setMessage('当前没有需要修复的文件关联。')
+      return
+    }
+    if (!options.confirmRepair) {
+      session.setMessage('当前页面不支持批量修复，请逐个使用「重新关联」。')
+      return
+    }
+
+    const basis: CsvRepairBasis = {
+      registryRevision: session.state.revision,
+      sourceRevisions: new Map(targets.map((source) => [source.sourceId, source.revision])),
+    }
+    const picked = new Map<string, CsvRepairPick>()
+
+    const pick = async (sourceId: string): Promise<CsvRepairPick | null> => {
+      if (destroyed || flow !== csvFlow) return null
+      try {
+        const handles = persistentCsv
+          ? await pickFiles(false)
+          : (await options.requestFiles?.(false) ?? []).map(fileHandle)
+        if (destroyed || flow !== csvFlow) return null
+        const handle = handles[0]
+        if (!handle) return null
+        let identity: CsvRepairIdentity = 'unknown'
+        const oldHandle = session.handleFor(sourceId)
+        if (oldHandle) {
+          try {
+            identity = (await isSameCsvHandle(handle, oldHandle)) ? 'same' : 'different'
+          } catch {
+            // 无法比较时不能按同名认定同一文件；留给用户明确选择。
+            identity = 'unknown'
+          }
+        }
+        if (destroyed || flow !== csvFlow) return null
+        const value: CsvRepairPick = { handle, identity }
+        picked.set(sourceId, value)
+        return value
+      } catch (error) {
+        if (isAbortError(error)) return null
+        session.setMessage(`选择文件失败：${errorMessage(error)}`)
+        return null
+      }
+    }
+
+    const list: CsvRepairTarget[] = targets.map((source) => {
+      const scopeId = boundScopeForSource(source.sourceId)
+      return {
+        sourceId: source.sourceId,
+        sourceName: source.name,
+        ruleCount: scopeId ? exclusionScopes.get(scopeId)?.rules.length ?? 0 : 0,
+      }
+    })
+
+    let decision: CsvRepairDecision[] | 'cancel'
+    try {
+      decision = await options.confirmRepair(list, pick)
+    } catch (error) {
+      session.setMessage(`修复未开始：${errorMessage(error)}。原关联和成绩保持不变。`)
+      return
+    }
+    if (destroyed || flow !== csvFlow) return
+    if (decision === 'cancel') {
+      session.setMessage('已取消修复，原关联和成绩保持不变。')
+      return
+    }
+
+    const inputs: CsvRepairRequest[] = []
+    const scopeGuards: CsvScopeGuard[] = []
+    for (const item of list) {
+      const choice = decision.find((entry) => entry.sourceId === item.sourceId)
+      const selection = picked.get(item.sourceId)
+      if (!choice || !selection) {
+        session.setMessage('修复信息不完整，请重新开始；原关联未改变。')
+        return
+      }
+      let scopeId: string | null = null
+      if (choice.mode === 'inherit') {
+        const bound = boundScopeForSource(item.sourceId)
+        const scope = bound ? exclusionScopes.get(bound) : null
+        if (bound && scope) {
+          scopeId = bound
+          scopeGuards.push({
+            scopeId: bound,
+            revision: scope.revision,
+            // 沿用规则时同步替换作用域里的句柄，之后推进锚点不会再写回失效的旧句柄。
+            owner: {
+              kind: 'csv',
+              name: selection.handle.name,
+              handle: persistentCsv ? selection.handle : undefined,
+              sourceId: item.sourceId,
+            },
+          })
+        }
+      }
+      inputs.push({
+        sourceId: item.sourceId,
+        handle: selection.handle,
+        exclusionScopeId: scopeId,
+        expectedSourceRevision: basis.sourceRevisions.get(item.sourceId),
+      })
+    }
+
+    let outcome: CsvOperationResult
+    deferCsvPublish = true
+    try {
+      outcome = await session.repair(inputs, basis, scopeGuards)
+    } finally {
+      deferCsvPublish = false
+    }
+    if (destroyed || flow !== csvFlow) return
+    if (outcome !== 'success') {
+      emit()
+      return
+    }
+    // 作用域已换成新句柄、修订号提升：重读规则后再发布统计。
+    const ready = await loadExclusions()
+    if (destroyed || flow !== csvFlow) return
+    if (ready) await handleCsvSessionChange(true)
+    emit()
+  }
+
   async function removeCsvSource(sourceId: string): Promise<void> {
     if (destroyed) return
     const flow = sourceFlow
@@ -1353,6 +1585,17 @@ export function createPlayerController(options: PlayerControllerOptions): Player
   async function removeAllCsv(): Promise<void> {
     if (destroyed) return
     const flow = sourceFlow
+    const browserWindow =
+      typeof globalThis.window === 'undefined' ? null : globalThis.window
+    if (
+      browserWindow &&
+      typeof browserWindow.confirm === 'function' &&
+      !browserWindow.confirm(
+        '清空关联清单？只会取消本机记住的 CSV 文件，不会删除扩展数据、排行榜配置或已保存的排除规则。',
+      )
+    ) {
+      return
+    }
     invalidateCsvFlow()
     await session.removeAll()
     if (destroyed || flow !== sourceFlow) return
@@ -1506,7 +1749,7 @@ export function createPlayerController(options: PlayerControllerOptions): Player
       kind: 'csv',
       name: displayName ?? record.name,
       // 降级模式的文件对象带方法，不能写进 IndexedDB；规则仍按展示名和来源保留。
-      handle: persistentCsv ? record.handle : undefined,
+      handle: persistentCsv ? session.handleFor(sourceId) ?? undefined : undefined,
       sourceId,
     }
   }
@@ -1741,6 +1984,32 @@ export function createPlayerController(options: PlayerControllerOptions): Player
     })
     await bindCsvScopes()
     if (destroyed) return { ok: false, message: '页面已关闭，操作未应用。' }
+    // 规则现在作用于当前文件：把作用域里的文件身份换成当前句柄，否则推进锚点会写回旧句柄。
+    if (persistentCsv) {
+      const handle = session.handleFor(sourceId)
+      if (handle) {
+        const rebound = await store().commit(
+          [
+            {
+              scopeId,
+              kind: 'csv',
+              owner: { kind: 'csv', name: sourceRecord.name, handle, sourceId },
+              expectedRevision: scope.revision,
+              add: [],
+              remove: [],
+              rebindOwner: true,
+            },
+          ],
+          () => !destroyed,
+        )
+        if (destroyed) return { ok: false, message: '页面已关闭，操作未应用。' }
+        if (!rebound) {
+          return { ok: false, message: '这个历史来源已在其他页面变化，请刷新后重试。' }
+        }
+        exclusionRefreshVersion += 1
+        acceptScopes(rebound.scopes)
+      }
+    }
     const applied = await handleCsvSessionChange(true)
     if (destroyed) return { ok: false, message: '页面已关闭，操作未应用。' }
     if (!applied) {
@@ -1831,6 +2100,7 @@ export function createPlayerController(options: PlayerControllerOptions): Player
     enterCsvSource,
     addCsvFiles,
     relinkCsvSource,
+    repairCsvSources,
     removeCsvSource,
     removeAllCsv,
     refreshCsv,

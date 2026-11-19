@@ -155,6 +155,59 @@ export function csvScopeIdForSource(sourceId: string, sourceRevision: number): s
   return `csv|${sourceId}|${sourceRevision}`
 }
 
+/**
+ * 从 CSV 作用域 ID 还原创建时的来源身份。
+ *
+ * 旧来源没有显式绑定、文件句柄又已失效时，作用域 ID 自身记录着来源与修订号，
+ * 可作为“这个作用域属于哪个文件”的可核验依据；格式不符时返回 null。
+ */
+export function csvScopeOrigin(scopeId: string): { sourceId: string; sourceRevision: number } | null {
+  const parts = scopeId.split('|')
+  if (parts.length !== 3 || parts[0] !== 'csv') return null
+  const [sourceId, rawRevision] = [parts[1]!, parts[2]!]
+  if (!sourceId) return null
+  const revision = Number(rawRevision)
+  if (!Number.isInteger(revision) || revision < 0) return null
+  return { sourceId, sourceRevision: revision }
+}
+
+/**
+ * 两个作用域所有者是否指向同一目标。
+ * 文件句柄按引用比较，不枚举浏览器句柄的内部属性。
+ * 仅在显式换绑时使用此比较，不用它判断普通锚点更新是否需要修改 owner。
+ */
+export function sameScopeOwner(
+  a: ExclusionScopeOwner | null | undefined,
+  b: ExclusionScopeOwner | null | undefined,
+): boolean {
+  if (!a || !b) return a === b
+  if (a.kind === 'site' && b.kind === 'site') {
+    return a.namespace === b.namespace && a.userId === b.userId
+  }
+  if (a.kind === 'csv' && b.kind === 'csv') {
+    return (
+      a.name === b.name &&
+      (a.sourceId ?? null) === (b.sourceId ?? null) &&
+      (a.handle ?? null) === (b.handle ?? null)
+    )
+  }
+  return false
+}
+
+/**
+ * 只替换作用域的文件身份引用：规则目标与锚点保持不变，修订号提升以通知其他页面。
+ *
+ * 修复关联或把历史规则绑定到当前文件后，必须同步 owner 里的句柄，
+ * 否则推进锚点写回整个作用域时仍会写入失效的旧句柄。所有者没有变化时返回 null。
+ */
+export function rebindScopeOwner(
+  scope: ExclusionScopeRecord,
+  owner: ExclusionScopeOwner,
+): ExclusionScopeRecord | null {
+  if (sameScopeOwner(scope.owner, owner)) return null
+  return { ...scope, revision: scope.revision + 1, owner: { ...owner } }
+}
+
 function updateHash(hash: number, code: number): number {
   return Math.imul(hash ^ code, 16_777_619) >>> 0
 }

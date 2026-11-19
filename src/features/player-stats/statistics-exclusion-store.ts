@@ -13,7 +13,10 @@ import type {
   ExclusionScopeRecord,
   ExclusionTarget,
 } from './statistics-exclusion'
-import { exclusionTargetKey } from './statistics-exclusion'
+import {
+  exclusionTargetKey,
+  rebindScopeOwner,
+} from './statistics-exclusion'
 
 export interface ExclusionMutation {
   scopeId: string
@@ -26,6 +29,11 @@ export interface ExclusionMutation {
   remove: readonly string[]
   /** 已匹配规则推进到最近一次成功快照的新匹配依据；按 ruleId 替换。 */
   update?: readonly ExclusionRule[]
+  /**
+   * 只替换作用域的文件身份引用（例如修复关联后换成新句柄）。
+   * 规则内容不变时也要提升修订号，否则写回整个作用域时仍是失效的旧句柄。
+   */
+  rebindOwner?: boolean
 }
 
 export interface ExclusionCommitResult {
@@ -240,9 +248,18 @@ function applyMutation(
   }
 
   if (!changed) {
+    if (!mutation.rebindOwner) {
+      return {
+        scope: current ? copyScope(current) : null,
+        changed: false,
+      }
+    }
+    // 仅替换文件身份引用：规则和锚点不变，但修订号必须提升。
+    if (!current) return null
+    const rebound = rebindScopeOwner(current, mutation.owner)
     return {
-      scope: current ? copyScope(current) : null,
-      changed: false,
+      scope: rebound ?? copyScope(current),
+      changed: rebound !== null,
     }
   }
   return {

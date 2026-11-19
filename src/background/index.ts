@@ -1,4 +1,8 @@
 import {
+  RANKING_OPEN_MESSAGE,
+  isRankingOpenSender,
+} from '../shared/ranking-route'
+import {
   appendWatchLog,
   getWatchSettings,
   getWatchStatus,
@@ -349,7 +353,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   void refreshBadge()
 })
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   const request = message as
     | {
         type?: string
@@ -365,6 +369,16 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     | undefined
 
   switch (request?.type) {
+    case RANKING_OPEN_MESSAGE:
+      if (!isRankingOpenSender(sender, chrome.runtime.id)) {
+        sendResponse({ ok: false, error: '来源不是 openms.top 排行榜页面' })
+        return false
+      }
+      void chrome.tabs
+        .create({ url: chrome.runtime.getURL('ranking.html') })
+        .then((tab) => sendResponse({ ok: true, tabId: tab.id }))
+        .catch((error: unknown) => sendResponse({ ok: false, error: String(error) }))
+      return true
     case 'WATCH_START':
       void serialize(beginWatching)
         .then((result) => sendResponse(result))

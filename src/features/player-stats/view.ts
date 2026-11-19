@@ -2,7 +2,7 @@ import { SITE_ORIGIN } from '../../shared/constants'
 import { createAboutCard } from '../../shared/about-card'
 import { formatCount, formatDateTime } from '../../shared/format'
 import { askSelfId, resolveSelfId } from '../../shared/self-id'
-import { el, externalLink } from '../../shared/ui'
+import { el, externalLink, rankingPageUrl } from '../../shared/ui'
 import { configureColors } from './colors'
 import { loadAnalysisSettings } from './analysis-settings'
 import { createAnalysisView } from './analysis-view'
@@ -61,11 +61,13 @@ export async function mountPlayerStats(
     onRefresh: () => void controller.refreshCsv(),
     onCancel: () => controller.cancelCsv(),
     onGrant: (sourceId) => void controller.grantCsv(sourceId),
+    onRepair: () => void controller.repairCsvSources(),
   })
   controller = createPlayerController({
     launch,
     requestFiles: csvPanel.requestFiles,
     confirmRelink: (choice) => csvPanel.confirmRelink(choice),
+    confirmRepair: (targets, pick) => csvPanel.confirmRepair(targets, pick),
   })
   const exclusionPanel = createExclusionPanel({
     onExclude: (keys, snapshotKey) => controller.excludeEntries(keys, snapshotKey),
@@ -119,9 +121,13 @@ export async function mountPlayerStats(
     selfButton.addEventListener('click', () => void openMyStats())
   }
   const headerActions = el('div', 'player-actions')
+  const rankingLink = el('a', 'button', '自定义排行榜') as HTMLAnchorElement
+  rankingLink.href = rankingPageUrl()
+  rankingLink.target = '_blank'
+  rankingLink.rel = 'noreferrer'
   if (homeLink) headerActions.append(homeLink)
   if (selfButton) headerActions.append(selfButton)
-  headerActions.append(exclusionPanel.trigger, refreshButton, cancelButton)
+  headerActions.append(rankingLink, exclusionPanel.trigger, refreshButton, cancelButton)
   header.append(headerText, headerActions)
 
   const status = el('p', 'player-status')
@@ -225,6 +231,7 @@ export async function mountPlayerStats(
     )
     homeLink?.classList.toggle('hidden', embedded)
     selfButton?.classList.toggle('hidden', embedded)
+    rankingLink.classList.toggle('hidden', embedded)
 
     scoreTab.classList.toggle('active', snapshot.page === 'score')
     analysisTab.classList.toggle('active', snapshot.page === 'analysis')

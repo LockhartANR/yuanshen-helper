@@ -1,7 +1,15 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { IdentifierItem } from '../features/user-search/api'
 import type { UserRecord } from '../features/user-search/model'
-import type { CsvSourceRegistry } from '../features/player-stats/csv-sources'
+import type {
+  GlobalRankDataset,
+  GlobalRankMeta,
+  GlobalRankTask,
+  GlobalRankTaskChunk,
+  GlobalRankVideoRow,
+  RankConfig,
+} from '../features/custom-ranking/model'
+import type { CsvHandleRecord, CsvSourceRegistry } from '../features/player-stats/csv-sources'
 import type { VideoDetail } from '../features/player-stats/model'
 import type { ExclusionScopeRecord } from '../features/player-stats/statistics-exclusion'
 import type { WatchFile } from '../features/upload-watch/types'
@@ -85,14 +93,55 @@ interface YuanshenDB extends DBSchema {
     key: string
     value: CsvSourceRegistry
   }
+  /** 关联清单元数据：不包含文件句柄。 */
+  csvSourceMeta: {
+    key: string
+    value: CsvSourceRegistry
+  }
+  /** 文件句柄按来源独立保存，修改一个来源不重写其他句柄。 */
+  csvHandles: {
+    key: string
+    value: CsvHandleRecord
+  }
   statExclusions: {
     key: string
     value: ExclusionScopeRecord
   }
+  globalRankDatasets: {
+    key: string
+    value: GlobalRankDataset
+    indexes: { 'by-status': string; 'by-base': string }
+  }
+  globalRankVideos: {
+    key: [string, number]
+    value: GlobalRankVideoRow
+    indexes: {
+      'by-dataset-player': [string, number]
+      'by-dataset-detail': [string, string]
+    }
+  }
+  globalRankTasks: {
+    key: string
+    value: GlobalRankTask
+    indexes: { 'by-dataset': string }
+  }
+  globalRankTaskChunks: {
+    key: [string, string, string]
+    value: GlobalRankTaskChunk
+    indexes: { 'by-task': string }
+  }
+  globalRankConfigs: {
+    key: string
+    value: RankConfig
+  }
+  globalRankMeta: {
+    key: string
+    value: GlobalRankMeta
+  }
 }
 
 const DB_NAME = 'yuanshen-helper'
-const DB_VERSION = 5
+const DB_VERSION = 7
 
 let dbPromise: Promise<IDBPDatabase<YuanshenDB>> | null = null
 const blockedListeners = new Set<(version: number) => void>()
@@ -152,8 +201,42 @@ export function getDb(): Promise<IDBPDatabase<YuanshenDB>> {
         if (!db.objectStoreNames.contains('csvSources')) {
           db.createObjectStore('csvSources', { keyPath: 'id' })
         }
+        if (!db.objectStoreNames.contains('csvSourceMeta')) {
+          db.createObjectStore('csvSourceMeta', { keyPath: 'id' })
+        }
+        if (!db.objectStoreNames.contains('csvHandles')) {
+          db.createObjectStore('csvHandles', { keyPath: 'sourceId' })
+        }
         if (!db.objectStoreNames.contains('statExclusions')) {
           db.createObjectStore('statExclusions', { keyPath: 'scopeId' })
+        }
+        if (!db.objectStoreNames.contains('globalRankDatasets')) {
+          const store = db.createObjectStore('globalRankDatasets', { keyPath: 'id' })
+          store.createIndex('by-status', 'status')
+          store.createIndex('by-base', 'baseUrl')
+        }
+        if (!db.objectStoreNames.contains('globalRankVideos')) {
+          const store = db.createObjectStore('globalRankVideos', {
+            keyPath: ['datasetId', 'videoId'],
+          })
+          store.createIndex('by-dataset-player', ['datasetId', 'playerId'])
+          store.createIndex('by-dataset-detail', ['datasetId', 'detailState'])
+        }
+        if (!db.objectStoreNames.contains('globalRankTasks')) {
+          const store = db.createObjectStore('globalRankTasks', { keyPath: 'id' })
+          store.createIndex('by-dataset', 'datasetId')
+        }
+        if (!db.objectStoreNames.contains('globalRankTaskChunks')) {
+          const store = db.createObjectStore('globalRankTaskChunks', {
+            keyPath: ['taskId', 'kind', 'chunkId'],
+          })
+          store.createIndex('by-task', 'taskId')
+        }
+        if (!db.objectStoreNames.contains('globalRankConfigs')) {
+          db.createObjectStore('globalRankConfigs', { keyPath: 'id' })
+        }
+        if (!db.objectStoreNames.contains('globalRankMeta')) {
+          db.createObjectStore('globalRankMeta', { keyPath: 'key' })
         }
       },
     })

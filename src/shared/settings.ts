@@ -1,4 +1,5 @@
 import { DEFAULT_API_BASE } from './constants'
+import { DEFAULT_RANK_PAGE_SIZE, RANK_PAGE_SIZES } from '../features/custom-ranking/model'
 
 export interface Settings {
   apiBase: string
@@ -8,6 +9,8 @@ export interface Settings {
   selfUserId: number | null
   /** 是否在 openms.top 玩家页显示「赛博大表」入口；旧设置缺字段时默认开启。 */
   siteAnalysisEnabled: boolean
+  /** 全站排行榜每页显示的人数；非法或缺省时回退为 20。 */
+  rankingPageSize: number
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -16,6 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   identifierLookupEnabled: false,
   selfUserId: null,
   siteAnalysisEnabled: true,
+  rankingPageSize: DEFAULT_RANK_PAGE_SIZE,
 }
 
 const SETTINGS_KEY = 'settings'
@@ -38,6 +42,7 @@ export async function getSettings(): Promise<Settings> {
     selfUserId: normalizeSelfUserId(value?.selfUserId),
     // 旧版本没有这个字段，不能因为缺字段就关掉入口。
     siteAnalysisEnabled: value?.siteAnalysisEnabled !== false,
+    rankingPageSize: normalizeRankPageSize(value?.rankingPageSize),
   }
 }
 
@@ -54,9 +59,18 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
       patch.siteAnalysisEnabled === undefined
         ? current.siteAnalysisEnabled
         : patch.siteAnalysisEnabled !== false,
+    rankingPageSize: normalizeRankPageSize(
+      patch.rankingPageSize === undefined ? current.rankingPageSize : patch.rankingPageSize,
+    ),
   }
   await chrome.storage.local.set({ [SETTINGS_KEY]: next })
   return next
+}
+
+function normalizeRankPageSize(value: unknown): number {
+  return typeof value === 'number' && RANK_PAGE_SIZES.includes(value)
+    ? value
+    : DEFAULT_RANK_PAGE_SIZE
 }
 
 function normalizeSelfUserId(value: unknown): number | null {

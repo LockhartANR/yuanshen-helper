@@ -17,6 +17,7 @@ export default defineConfig({
         options: resolve(root, 'options.html'),
         upload: resolve(root, 'upload.html'),
         player: resolve(root, 'player.html'),
+        ranking: resolve(root, 'ranking.html'),
         offscreen: resolve(root, 'offscreen.html'),
       },
     },

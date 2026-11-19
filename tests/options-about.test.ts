@@ -137,5 +137,10 @@ describe('设置页关于卡片', () => {
     expect(page.children[page.children.length - 1]!.textContent).toBe(
       '问题和建议请提到仓库的 Issues。',
     )
+    expect(
+      page.all().some(
+        (node) => node.tag === 'a' && node.textContent === '自定义排行榜 ↗' && node.href === 'ranking.html',
+      ),
+    ).toBe(true)
   })
 })

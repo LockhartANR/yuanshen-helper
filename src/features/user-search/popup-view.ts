@@ -14,6 +14,7 @@ import {
   openLocalCsvTab,
   openOptionsPage,
   openPlayerStatsTab,
+  openRankingTab,
   openPlayerTab,
 } from '../../shared/ui'
 import {
@@ -218,6 +219,20 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
       .catch(() => setHint('打开本地 CSV 分析失败，请稍后重试'))
   })
 
+  const rankingEntry = el('button', 'csv-entry ranking-entry')
+  rankingEntry.type = 'button'
+  rankingEntry.title = '打开全站自定义排行榜，不需要玩家 ID'
+  rankingEntry.append(
+    icon('chart'),
+    el('span', 'csv-entry-label', '自定义排行榜'),
+    el('span', 'csv-entry-note', '全站公开数据'),
+  )
+  rankingEntry.addEventListener('click', () => {
+    void openRankingTab()
+      .then(() => window.close())
+      .catch(() => setHint('打开自定义排行榜失败，请稍后重试'))
+  })
+
   const results = el('main', 'results')
   results.id = 'search-results'
   results.setAttribute('role', 'listbox')
@@ -236,7 +251,7 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   syncButton.append(syncIcon, syncLabel)
   statusbar.append(statusText, syncButton)
 
-  root.append(header, searchRow, csvEntry, results, hint, statusbar)
+  root.append(header, searchRow, csvEntry, rankingEntry, results, hint, statusbar)
   renderIdentifierToggle()
   identifierToggle.addEventListener('click', () => void toggleIdentifierLookup())
 

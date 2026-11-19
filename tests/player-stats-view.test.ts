@@ -310,7 +310,10 @@ beforeEach(() => {
   vi.stubGlobal('document', { createElement: (tag: string) => new TestElement(tag), title: '' })
   vi.stubGlobal('location', { search: '?id=16' })
   vi.stubGlobal('chrome', {
-    runtime: { getManifest: () => ({ version: 'test' }) },
+    runtime: {
+      getManifest: () => ({ version: 'test' }),
+      getURL: (path: string) => path,
+    },
   })
   stubWindow()
   vi.mocked(loadPlayer).mockResolvedValue(loaded())
@@ -328,6 +331,10 @@ describe('统一关于卡片', () => {
     expect(card.textContent).toContain('元神助手 vtest · 开源扫雷网辅助工具')
     const wrap = byClass('player-page')
     expect(wrap.children[wrap.children.length - 1]).toBe(card)
+    const ranking = find(
+      (node) => node.tag === 'a' && node.textContent === '自定义排行榜',
+    )
+    expect(ranking.href).toBe('ranking.html')
 
     visibleButton('赛博大表').click()
     await startRefresh()
@@ -568,7 +575,7 @@ describe('本地 CSV 关联清单', () => {
     await startRefresh()
     await vi.waitFor(() => expect(handle.reads).toBe(1))
 
-    visibleButton('移除全部').click()
+    visibleButton('清空关联清单').click()
     await vi.waitFor(() => expect(byClass('csv-empty').visible()).toBe(true))
     expect(sourceNames()).toEqual([])
     gate.resolve(handle.file())

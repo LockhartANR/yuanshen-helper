@@ -95,6 +95,52 @@ describe('统计排除存储', () => {
     expect((await store.get('site|a'))?.revision).toBe(2)
   })
 
+  it('只替换文件身份引用时也提升修订号，规则与锚点不变', async () => {
+    const legacyHandle = { name: '旧成绩.csv', legacy: true }
+    const scopeId = 'csv|src-1|1'
+    const existing = siteRule(1)
+    const store = createMemoryExclusionStore([
+      {
+        scopeId,
+        kind: 'csv',
+        revision: 1,
+        owner: { kind: 'csv', name: '旧成绩.csv', handle: legacyHandle as never, sourceId: 'src-1' },
+        rules: [existing],
+      },
+    ])
+    const newHandle = { name: '新成绩.csv' }
+    const rebind: ExclusionMutation = {
+      scopeId,
+      kind: 'csv',
+      owner: { kind: 'csv', name: '新成绩.csv', handle: newHandle as never, sourceId: 'src-1' },
+      expectedRevision: 1,
+      add: [],
+      remove: [],
+      rebindOwner: true,
+    }
+    // 不带 rebindOwner 时按原规则忽略 owner 更新。
+    const ignored = await store.commit([{ ...rebind, rebindOwner: false }])
+    expect(ignored?.changed).toBe(false)
+    expect((await store.get(scopeId))?.revision).toBe(1)
+
+    const result = await store.commit([rebind])
+    expect(result?.changed).toBe(true)
+    const stored = await store.get(scopeId)
+    expect(stored?.revision).toBe(2)
+    expect(stored?.rules).toEqual([existing])
+    expect(stored?.owner.kind === 'csv' && stored.owner.name).toBe('新成绩.csv')
+    expect(
+      (stored?.owner.kind === 'csv' ? stored.owner.handle : null) as unknown as {
+        name?: string
+      } | null,
+    ).toBe(newHandle)
+
+    // 所有者没有变化时不再重复提升修订号。
+    const again = await store.commit([{ ...rebind, expectedRevision: 2 }])
+    expect(again?.changed).toBe(false)
+    expect((await store.get(scopeId))?.revision).toBe(2)
+  })
+
   it('修订号冲突时整批不写入', async () => {
     const store = createMemoryExclusionStore([scope('site|a', [siteRule(1)])])
     const result = await store.commit([

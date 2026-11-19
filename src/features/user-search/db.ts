@@ -4,6 +4,7 @@ import {
   type SyncMeta,
 } from '../../shared/db'
 import type { UserRecord } from './model'
+import { clearGlobalRankingData } from '../custom-ranking/store'
 
 export type { SyncMeta }
 
@@ -80,6 +81,8 @@ export async function clearAllData(): Promise<void> {
     tx.objectStore('playerMeta').clear(),
   ])
   await tx.done
+  // 全站排行榜有独立的大体量 store；设置页“清空全部数据”也要一并清理。
+  await clearGlobalRankingData()
 }
 
 export async function getIdentifierCache(

@@ -6,5 +6,7 @@
  */
 import './upload'
 import { startPlayerAnalysis } from './player-analysis'
+import { startRankingEntry } from './ranking-entry'
 
 startPlayerAnalysis()
+startRankingEntry()

@@ -5,7 +5,13 @@ import {
 import { el } from '../../../shared/ui'
 import type { CsvSession } from '../csv-session'
 import { formatValidDelta } from '../csv-sources'
-import type { CsvRelinkChoice, CsvRelinkMode } from '../player-controller'
+import type {
+  CsvRelinkChoice,
+  CsvRelinkMode,
+  CsvRepairDecision,
+  CsvRepairPick,
+  CsvRepairTarget,
+} from '../player-controller'
 import type { PlayerSnapshot, PlayerSource } from '../player-state'
 
 const CSV_FORMAT_HINT =
@@ -21,6 +27,7 @@ export interface CsvPanelOptions {
   onRefresh(): void
   onCancel(): void
   onGrant(sourceId: string): void
+  onRepair(): void
 }
 
 export interface CsvPanel {
@@ -32,6 +39,11 @@ export interface CsvPanel {
   requestFiles(multiple: boolean): Promise<File[]>
   /** 重新关联到不同文件时，让用户明确选择是否沿用原排除规则。 */
   confirmRelink(choice: CsvRelinkChoice): Promise<CsvRelinkMode>
+  /** 批量修复：逐来源选择文件并决定是否沿用原排除规则。 */
+  confirmRepair(
+    targets: readonly CsvRepairTarget[],
+    pick: (sourceId: string) => Promise<CsvRepairPick | null>,
+  ): Promise<CsvRepairDecision[] | 'cancel'>
   render(snapshot: PlayerSnapshot, session: CsvSession): void
 }
 
@@ -89,11 +101,12 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
   const addButton = el('button', 'button', '添加 CSV')
   const refreshButton = el('button', 'button primary', '刷新')
   const cancelButton = el('button', 'button hidden', '取消读取')
-  const clearButton = el('button', 'button', '移除全部')
-  for (const node of [addButton, refreshButton, cancelButton, clearButton]) {
+  const repairButton = el('button', 'button hidden', '修复文件关联')
+  const clearButton = el('button', 'button', '清空关联清单')
+  for (const node of [addButton, refreshButton, cancelButton, repairButton, clearButton]) {
     node.type = 'button'
   }
-  panelActions.append(addButton, refreshButton, cancelButton, clearButton)
+  panelActions.append(addButton, refreshButton, cancelButton, repairButton, clearButton)
   panelHead.append(panelTitle, panelActions)
   const panelNote = el('p', 'csv-sources-note')
   const list = el('ul', 'csv-source-list')
@@ -117,8 +130,33 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
     '沿用只延续规则来源关系，仍会按新文件逐条匹配；无法确认的重复条目保持未匹配，不会猜测排除。',
   )
   relinkBox.append(relinkTitle, relinkText, relinkActions, relinkHint)
-  panel.append(panelHead, panelNote, list, relinkBox)
 
+  // ---- 批量修复关联 ----
+  const repairBox = el('section', 'csv-repair-choice hidden')
+  repairBox.setAttribute('role', 'dialog')
+  repairBox.setAttribute('aria-labelledby', 'csv-repair-title')
+  const repairTitle = el('h3', 'csv-repair-title', '修复文件关联')
+  repairTitle.id = 'csv-repair-title'
+  repairTitle.tabIndex = -1
+  const repairText = el(
+    'p',
+    'csv-repair-text',
+    '为下面每个来源重新选择文件。修复不会清空扩展数据、排行榜配置或其他来源的排除规则。',
+  )
+  const repairList = el('div', 'csv-repair-list')
+  const repairHint = el(
+    'p',
+    'csv-repair-hint',
+    '无法确认文件身份时不会自动沿用排除规则；需要沿用请在对应行明确选择。两个来源不能绑定同一个文件。',
+  )
+  const repairActions = el('div', 'csv-repair-actions')
+  const applyRepairButton = el('button', 'button primary', '开始修复')
+  const cancelRepairButton = el('button', 'button', '取消')
+  for (const node of [applyRepairButton, cancelRepairButton]) node.type = 'button'
+  applyRepairButton.disabled = true
+  repairActions.append(applyRepairButton, cancelRepairButton)
+  repairBox.append(repairTitle, repairText, repairList, repairHint, repairActions)
+  panel.append(panelHead, panelNote, list, relinkBox, repairBox)
   let pendingInput: ((files: File[]) => void) | null = null
   let pendingRelink: ((mode: CsvRelinkMode) => void) | null = null
   let relinkFocus: HTMLElement | null = null
@@ -165,6 +203,136 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
     }
   })
 
+  interface RepairRow {
+    target: CsvRepairTarget
+    pickButton: HTMLButtonElement
+    modeSelect: HTMLSelectElement
+    targetName: HTMLElement
+    note: HTMLElement
+    picked: CsvRepairPick | null
+  }
+
+  let pendingRepair:
+    | {
+        rows: RepairRow[]
+        resolve: (value: CsvRepairDecision[] | 'cancel') => void
+      }
+    | null = null
+  let repairFocus: HTMLElement | null = null
+
+  function finishRepair(value: CsvRepairDecision[] | 'cancel'): void {
+    const pending = pendingRepair
+    pendingRepair = null
+    repairBox.classList.add('hidden')
+    pending?.resolve(value)
+    const target = repairFocus
+    repairFocus = null
+    target?.focus?.()
+  }
+
+  function repairRowsComplete(): boolean {
+    return Boolean(pendingRepair) && pendingRepair!.rows.every((row) => row.picked !== null)
+  }
+
+  function confirmRepair(
+    targets: readonly CsvRepairTarget[],
+    pick: (sourceId: string) => Promise<CsvRepairPick | null>,
+  ): Promise<CsvRepairDecision[] | 'cancel'> {
+    // 上一次修复选择尚未返回时先按取消处理，不让两个批次共用同一份选择。
+    if (pendingRepair) finishRepair('cancel')
+    repairList.replaceChildren()
+    const rows: RepairRow[] = []
+    for (const target of targets) {
+      const row = el('div', 'csv-repair-row')
+      const pair = el('div', 'csv-repair-pair')
+      const sourceName = el('span', 'csv-repair-source', target.sourceName)
+      const arrow = el('span', 'csv-repair-arrow', '→')
+      const targetName = el('span', 'csv-repair-target', '尚未选择文件')
+      pair.append(sourceName, arrow, targetName)
+      const controls = el('div', 'csv-repair-controls')
+      const pickButton = el('button', 'button small', '选择文件')
+      pickButton.type = 'button'
+      const modeSelect = el('select', 'select') as HTMLSelectElement
+      const inheritOption = el('option', undefined, '沿用原排除规则') as HTMLOptionElement
+      inheritOption.value = 'inherit'
+      inheritOption.disabled = target.ruleCount === 0
+      const freshOption = el('option', undefined, '作为新来源') as HTMLOptionElement
+      freshOption.value = 'new'
+      modeSelect.append(inheritOption, freshOption)
+      modeSelect.value = 'new'
+      modeSelect.disabled = true
+      modeSelect.setAttribute('aria-label', `${target.sourceName} 的排除规则处理方式`)
+      const note = el(
+        'span',
+        'csv-repair-note',
+        target.ruleCount > 0 ? `${target.ruleCount} 条排除规则` : '无排除规则',
+      )
+      controls.append(pickButton, modeSelect, note)
+      row.append(pair, controls)
+      repairList.append(row)
+      const entry: RepairRow = {
+        target,
+        pickButton,
+        modeSelect,
+        targetName,
+        note,
+        picked: null,
+      }
+      rows.push(entry)
+      pickButton.addEventListener('click', () => {
+        if (!pendingRepair) return
+        pickButton.disabled = true
+        void (async () => {
+          const picked = await pick(target.sourceId)
+          // 对话框可能已取消或重新开始，晚到的选择不能写进新批次。
+          if (!pendingRepair || !pendingRepair.rows.includes(entry)) return
+          pickButton.disabled = false
+          if (!picked) return
+          entry.picked = picked
+          targetName.textContent = picked.handle.name
+          modeSelect.disabled = target.ruleCount === 0
+          modeSelect.value =
+            picked.identity === 'same' && target.ruleCount > 0 ? 'inherit' : 'new'
+          note.textContent =
+            picked.identity === 'same'
+              ? '与旧句柄相同'
+              : picked.identity === 'different'
+                ? '与旧文件不同'
+                : '无法确认文件身份'
+          if (picked.identity !== 'same' && target.ruleCount > 0) {
+            note.textContent += '；默认不沿用排除规则'
+          }
+          applyRepairButton.disabled = !repairRowsComplete()
+        })()
+      })
+    }
+    repairBox.classList.remove('hidden')
+    applyRepairButton.disabled = true
+    return new Promise<CsvRepairDecision[] | 'cancel'>((resolve) => {
+      pendingRepair = { rows, resolve }
+      const active =
+        typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+      repairFocus = active && typeof active.focus === 'function' ? active : null
+      repairTitle.focus()
+    })
+  }
+
+  applyRepairButton.addEventListener('click', () => {
+    if (!pendingRepair || !repairRowsComplete()) return
+    const decisions: CsvRepairDecision[] = pendingRepair.rows.map((row) => ({
+      sourceId: row.target.sourceId,
+      mode: row.modeSelect.value === 'inherit' ? 'inherit' : 'new',
+    }))
+    finishRepair(decisions)
+  })
+  cancelRepairButton.addEventListener('click', () => finishRepair('cancel'))
+  repairBox.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      finishRepair('cancel')
+    }
+  })
+
   function requestFiles(multiple: boolean): Promise<File[]> {
     return new Promise((resolve) => {
       // 上一次选择还没返回时先放弃它，避免两个点击共用同一个输入。
@@ -182,6 +350,7 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
   addButton.addEventListener('click', () => options.onAddFiles())
   refreshButton.addEventListener('click', () => options.onRefresh())
   cancelButton.addEventListener('click', () => options.onCancel())
+  repairButton.addEventListener('click', () => options.onRepair())
   clearButton.addEventListener('click', () => options.onRemoveAll())
   csvInput.addEventListener('change', () => {
     const files = csvInput.files ? [...csvInput.files] : []
@@ -236,6 +405,9 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
       if (current.needsPermission.includes(record.sourceId)) {
         main.append(el('span', 'csv-source-flag', '需要授权'))
       }
+      if (current.problemSources.includes(record.sourceId)) {
+        main.append(el('span', 'csv-source-flag', '需要修复'))
+      }
       const actions = el('div', 'csv-source-actions')
       if (current.needsPermission.includes(record.sourceId)) {
         actions.append(
@@ -278,6 +450,7 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
   function render(snapshot: PlayerSnapshot, session: CsvSession): void {
     if (snapshot.source !== 'csv' && pendingRelink) finishRelink('cancel')
     const current = session.state
+    if (pendingRepair && current.sources.length === 0) finishRepair('cancel')
     const emptyState =
       snapshot.standaloneCsv && current.ready && current.sources.length === 0
     sourceBar.classList.toggle('hidden', snapshot.embedded || emptyState)
@@ -290,6 +463,12 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
     refreshButton.disabled = current.loading || current.sources.length === 0
     refreshButton.classList.toggle('hidden', current.loading)
     cancelButton.classList.toggle('hidden', !current.loading)
+    repairButton.classList.toggle('hidden', current.problemSources.length === 0)
+    repairButton.disabled = current.loading
+    repairButton.title =
+      current.problemSources.length > 0
+        ? `${current.problemSources.length} 个文件需要重新选择`
+        : ''
     clearButton.disabled = current.sources.length === 0
     emptyButton.disabled = current.loading
     emptyCancel.classList.toggle('hidden', !current.loading)
@@ -304,6 +483,8 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
 
     if (current.loading && current.progress) {
       panelNote.textContent = `正在读取 ${current.progress.done}/${current.progress.total} 个文件…`
+    } else if (current.loading) {
+      panelNote.textContent = current.message
     } else if (snapshot.source === 'csv' && current.sources.length > 0 && !session.hasSnapshot()) {
       panelNote.textContent = `已关联 ${current.sources.length} 个文件，点击「刷新」加载成绩。`
     } else if (snapshot.source === 'csv' && session.hasSnapshot()) {
@@ -327,5 +508,5 @@ export function createCsvPanel(options: CsvPanelOptions): CsvPanel {
     renderFeedback(session)
   }
 
-  return { sourceBar, empty, panel, feedback, requestFiles, confirmRelink, render }
+  return { sourceBar, empty, panel, feedback, requestFiles, confirmRelink, confirmRepair, render }
 }
