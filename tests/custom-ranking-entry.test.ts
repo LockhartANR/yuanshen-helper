@@ -1,150 +1,86 @@
 import { describe, expect, it } from 'vitest'
-import { findRankingTabGroup } from '../src/content/ranking-entry'
+import { findRankingTabNav } from '../src/content/ranking-entry'
 
-/** 只实现入口定位用到的 DOM 能力，覆盖真实站点的 el-tabs 结构。 */
 class FakeElement {
-  className: string
-  attributes = new Map<string, string>()
-  children: FakeElement[] = []
-  parentElement: FakeElement | null = null
-  private text: string
+  readonly children: FakeElement[] = []
+  private parent: FakeElement | null = null
 
   constructor(
-    readonly tag: string,
-    text = '',
-    className = '',
-  ) {
-    this.text = text
-    this.className = className
+    private readonly selectors: string[],
+    readonly textContent = '',
+    readonly id = '',
+  ) {}
+
+  append(...children: FakeElement[]): void {
+    for (const child of children) {
+      child.parent = this
+      this.children.push(child)
+    }
   }
 
-  get textContent(): string {
-    return this.text + this.children.map((child) => child.textContent).join('')
-  }
-
-  set textContent(value: string) {
-    this.text = value
-    this.children = []
-  }
-
-  get isConnected(): boolean {
-    return true
-  }
-
-  getClientRects(): ArrayLike<unknown> {
+  getClientRects(): readonly object[] {
     return [{}]
   }
 
-  append(...nodes: FakeElement[]): void {
-    for (const node of nodes) {
-      node.parentElement = this
-      this.children.push(node)
-    }
-  }
-
-  all(): FakeElement[] {
-    return [this, ...this.children.flatMap((child) => child.all())]
-  }
-
   matches(selector: string): boolean {
-    const value = selector.trim()
-    if (value.startsWith('.')) return this.className.split(' ').includes(value.slice(1))
-    if (value === '[role="tab"]') return this.attributes.get('role') === 'tab'
-    return this.tag === value
+    return selector.split(',').some((part) => this.selectors.includes(part.trim()))
   }
 
   querySelectorAll(selector: string): FakeElement[] {
-    const parts = selector.split(',').map((part) => part.trim())
-    return this.all()
-      .slice(1)
-      .filter((node) => parts.some((part) => node.matches(part)))
-  }
-
-  querySelector(selector: string): FakeElement | null {
-    return this.querySelectorAll(selector)[0] ?? null
+    return this.children.flatMap((child) => [
+      ...(child.matches(selector) ? [child] : []),
+      ...child.querySelectorAll(selector),
+    ])
   }
 
   closest(selector: string): FakeElement | null {
-    let node: FakeElement | null = this
-    while (node) {
-      if (node.matches(selector)) return node
-      node = node.parentElement
-    }
-    return null
+    if (this.matches(selector)) return this
+    return this.parent?.closest(selector) ?? null
   }
 }
 
 const LABELS = ['竞速', '效率', '密度', '比赛', '小游戏', '作品']
 
-function page(labels: string[] = LABELS): {
-  root: FakeElement
-  tabs: FakeElement
-  nav: FakeElement
-  content: FakeElement
-} {
-  const root = new FakeElement('body')
-  const wrapper = new FakeElement('div', '', 'ranking-layout')
-  const header = new FakeElement('div', '排行榜')
-  const tabs = new FakeElement('div', '', 'el-tabs')
-  const nav = new FakeElement('div', '', 'el-tabs__nav')
-  const content = new FakeElement('div', '', 'el-tabs__content')
-  tabs.append(nav, content)
-  wrapper.append(header, tabs)
-  root.append(wrapper)
-  for (const label of labels) {
-    const item = new FakeElement('div', label, 'el-tabs__item')
-    item.attributes.set('role', 'tab')
-    nav.append(item)
-  }
-  return { root, tabs, nav, content }
+function tabNav(labels: string[] = LABELS, ids: string[] = []): FakeElement {
+  const nav = new FakeElement(['.el-tabs__nav', '[role="tablist"]'])
+  labels.forEach((label, index) => {
+    nav.append(new FakeElement(['.el-tabs__item', '[role="tab"]'], label, ids[index]))
+  })
+  return nav
 }
 
 describe('站内排行榜入口挂载点', () => {
-  it('页签未渲染完整时不猜测位置', () => {
-    const { root } = page(['竞速', '效率', '密度'])
-    expect(findRankingTabGroup(root as unknown as ParentNode)).toBeNull()
+  it('跳过表格中的同名页签', () => {
+    const root = new FakeElement(['body'])
+    const table = new FakeElement(['table'])
+    table.append(tabNav())
+    root.append(table)
+    expect(findRankingTabNav(root as unknown as ParentNode)).toBeNull()
   })
 
-  it('六个同名按钮位于表格内时不挂载', () => {
-    const root = new FakeElement('body')
-    const wrapper = new FakeElement('div')
-    const table = new FakeElement('table')
-    const row = new FakeElement('tr')
-    table.append(row)
-    wrapper.append(table)
-    root.append(wrapper)
-    for (const label of LABELS) {
-      const button = new FakeElement('button', label)
-      row.append(button)
-    }
-    expect(findRankingTabGroup(root as unknown as ParentNode)).toBeNull()
-  })
-
-  it('兼容没有 el-tabs 类的标签组，并返回共同父容器', () => {
-    const root = new FakeElement('body')
-    const wrapper = new FakeElement('div')
-    const group = new FakeElement('div', '', 'tab-bar')
-    wrapper.append(group)
-    root.append(wrapper)
-    for (const label of LABELS) {
-      const button = new FakeElement('button', label)
-      group.append(button)
-    }
-    expect(findRankingTabGroup(root as unknown as ParentNode)).toBe(
-      group as unknown as HTMLElement,
+  it('优先通过原生页签 ID 定位其他语言的导航栏', () => {
+    const root = new FakeElement(['body'])
+    const nav = tabNav(
+      ['Speed', 'Efficiency', 'Density', 'Tournament', 'Minigame', 'Works'],
+      ['tab-speed', 'tab-efficiency', 'tab-density', 'tab-tournament', 'tab-minigame', 'tab-media'],
     )
+    root.append(tabNav(), nav)
+    expect(findRankingTabNav(root as unknown as ParentNode)).toBe(nav)
   })
 
-  it('内容加载表格前后均定位到同一外层页签容器', () => {
-    const { root, tabs, content } = page()
-    expect(findRankingTabGroup(root as unknown as ParentNode)).toBe(tabs as unknown as HTMLElement)
-    // 模拟站点切换子榜单后重绘内容区：表格出现在内容区，页签导航不变。
-    content.children = []
-    const table = new FakeElement('table')
-    const row = new FakeElement('tr')
-    row.append(new FakeElement('td', '成绩'), new FakeElement('td', '时间'))
-    table.append(row)
-    content.append(table)
-    expect(findRankingTabGroup(root as unknown as ParentNode)).toBe(tabs as unknown as HTMLElement)
+  it('等待完整页签组，不合并分散在内外层导航中的页签', () => {
+    const root = new FakeElement(['body'])
+    const nav = tabNav(LABELS.slice(0, 3))
+    nav.append(tabNav(LABELS.slice(3)))
+    root.append(nav)
+    expect(findRankingTabNav(root as unknown as ParentNode)).toBeNull()
+  })
+
+  it('通过中文标签定位导航栏，已注入的入口和内容区表格不影响匹配', () => {
+    const root = new FakeElement(['body'])
+    const nav = tabNav()
+    nav.append(new FakeElement(['button'], '自定义'))
+    root.append(nav, new FakeElement(['table']))
+    expect(findRankingTabNav(root as unknown as ParentNode)).toBe(nav)
   })
 })

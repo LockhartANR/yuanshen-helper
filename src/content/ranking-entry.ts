@@ -1,13 +1,4 @@
-/**
- * openms.top 排行榜页的「自定义排行榜」入口。
- *
- * 只处理顶层页面 hash 路由 `#/ranking` 及其子路径；通过后台固定消息打开扩展页，
- * 内容脚本不直接调用 chrome.tabs，也不请求网站接口。
- *
- * 入口固定在外层排行榜页签组（竞速／效率／密度／比赛／小游戏／作品）之前，
- * 与该页签组处于同一公共布局层级。找不到可靠的页签组时等待页面渲染，
- * 不按标题、内部标题或 main 猜测位置。
- */
+/** 在 openms.top 排行榜的外层页签栏末尾挂载扩展入口。 */
 import { RANKING_OPEN_MESSAGE, isRankingUrl } from '../shared/ranking-route'
 
 const HOST_ID = 'ysh-ranking-entry'
@@ -15,73 +6,81 @@ const STYLE_ID = 'ysh-ranking-entry-style'
 const SYNC_DELAY_MS = 120
 const ROUTE_POLL_MS = 800
 
-/** 站内外层排行榜页签；六个标签同时出现才认为是可挂载的页签组。 */
-const TAB_LABELS = ['竞速', '效率', '密度', '比赛', '小游戏', '作品'] as const
+const RANKING_TABS = [
+  ['tab-speed', '竞速'],
+  ['tab-efficiency', '效率'],
+  ['tab-density', '密度'],
+  ['tab-tournament', '比赛'],
+  ['tab-minigame', '小游戏'],
+  ['tab-media', '作品'],
+] as const
 
 const ENTRY_STYLE = `
 #${HOST_ID} {
-  display: flex;
+  --ysh-ranking-accent: var(--ui-color-primary-dark-2, var(--el-color-primary-dark-2, #337ecc));
+  --ysh-ranking-label: color-mix(in srgb, var(--ysh-ranking-accent) 85%, black);
+  --ysh-ranking-hover: color-mix(in srgb, var(--ysh-ranking-accent) 70%, black);
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
-    "PingFang SC", sans-serif;
+  flex: 0 0 auto;
+  min-height: var(--el-tabs-header-height, 40px);
+  padding-inline: 4px;
+}
+html.dark #${HOST_ID} {
+  --ysh-ranking-label: var(--ui-color-primary-dark-2, var(--el-color-primary-dark-2, #66b1ff));
+  --ysh-ranking-hover: var(--ui-color-primary, var(--el-color-primary, #409eff));
 }
 #${HOST_ID} .ysh-ranking-button {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
-  padding: 5px 14px;
-  border: 1px solid #2563eb;
-  border-radius: 8px;
-  background: #2563eb;
-  color: #fff;
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ysh-ranking-label);
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.4;
+  font-size: var(--el-font-size-base, 14px);
+  font-weight: 500;
+  line-height: 1.25;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgb(15 23 42 / 16%);
 }
 #${HOST_ID} .ysh-ranking-button:hover {
-  filter: brightness(1.06);
+  color: var(--ysh-ranking-hover);
+}
+#${HOST_ID} .ysh-ranking-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 #${HOST_ID} .ysh-ranking-button:disabled {
   cursor: wait;
   opacity: 0.7;
 }
 #${HOST_ID} .ysh-ranking-status {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 100%;
+  inset-inline-end: 0;
+  width: min(220px, 75vw);
   margin: 0;
-  color: #b45309;
+  padding: 6px 8px;
+  border: 1px solid var(--el-border-color, #dcdfe6);
+  border-radius: 5px;
+  background: var(--el-bg-color-overlay, Canvas);
+  color: var(--el-text-color-primary, CanvasText);
   font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 #${HOST_ID} .ysh-ranking-status[hidden] {
   display: none;
 }
-@media (prefers-color-scheme: dark) {
-  #${HOST_ID} .ysh-ranking-button {
-    border-color: #3b82f6;
-    background: #2563eb;
-  }
-  #${HOST_ID} .ysh-ranking-status {
-    color: #fbbf24;
-  }
-}
 `
 
 let started = false
-let observer: MutationObserver | null = null
 let syncTimer: ReturnType<typeof setTimeout> | undefined
-let routeTimer: ReturnType<typeof setInterval> | undefined
 let host: HTMLElement | null = null
 let busy = false
-let lastHref = ''
-
-function isTopRankingPage(): boolean {
-  if (window.top !== window) return false
-  return isRankingUrl(window.location.href)
-}
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return
@@ -91,110 +90,52 @@ function ensureStyle(): void {
   document.head.append(style)
 }
 
-function isVisible(node: HTMLElement): boolean {
-  return node.isConnected && (typeof node.getClientRects !== 'function' || node.getClientRects().length > 0)
-}
-
-/** 页签文字必须等于标签本身，避免把表格里的玩家名或说明文字当作页签。 */
-function isTabLabel(node: Element, label: string): boolean {
-  const text = (node.textContent ?? '').replace(/\s+/g, '')
-  return text === label
-}
-
-function containsAllLabels(container: Element): boolean {
-  for (const label of TAB_LABELS) {
-    let found = false
-    for (const node of container.querySelectorAll<HTMLElement>('a, button, [role="tab"], li, span, div')) {
-      if (isTabLabel(node, label)) {
-        found = true
-        break
-      }
-    }
-    if (!found) return false
-  }
-  return true
-}
-
-/**
- * 在候选页签元素上向上寻找同时包含六个标签的最深祖先；
- * 再要求该祖先位于页签组件内部，返回整个页签组件（而不是单个按钮的包裹层）。
- */
-function commonTabGroup(candidates: HTMLElement[]): HTMLElement | null {
-  for (const candidate of candidates) {
-    let node: HTMLElement | null = candidate.parentElement
-    while (node) {
-      // 不越过 body / html；测试与降级环境下没有 document 时也能结束。
-      if (node.tagName && /^(BODY|HTML)$/i.test(node.tagName)) break
-      if (containsAllLabels(node)) {
-        // 返回整个 Element Plus 组件，使入口位于导航与内容区共同容器之前。
-        return node.closest<HTMLElement>('.el-tabs') ?? node
-      }
-      node = node.parentElement
-    }
-  }
-  return null
-}
-
-/**
- * 查找站内外层排行榜页签容器。
- *
- * 站点当前使用 Element Plus 的 el-tabs；这里同时兼容 `role=tab` 与普通按钮 /
- * 链接组。导航区须包含完整六个标签且不在表格内；没有独立导航区时，
- * 才要求整个容器不含表格，避免误挂到榜单内容区。
- */
-export function findRankingTabGroup(root: ParentNode = document): HTMLElement | null {
-  const tabItems = [
-    ...root.querySelectorAll<HTMLElement>('.el-tabs__item, [role="tab"]'),
-  ].filter((node) => isVisible(node))
-  const exacts = tabItems.filter((node) =>
-    TAB_LABELS.some((label) => isTabLabel(node, label)),
-  )
-  let group = exacts.length >= TAB_LABELS.length ? commonTabGroup(exacts) : null
-  if (!group) {
-    const scans = [
-      ...root.querySelectorAll<HTMLElement>('.el-tabs__item, [role="tab"], a, button'),
-    ].filter((node) => isVisible(node))
-    const candidates = scans.filter((node) =>
-      TAB_LABELS.some((label) => isTabLabel(node, label)),
+/** 只匹配拥有完整六个原生页签的独立导航栏，优先用与语言无关的 ID。 */
+export function findRankingTabNav(root: ParentNode = document): HTMLElement | null {
+  let fallback: HTMLElement | null = null
+  for (const nav of root.querySelectorAll<HTMLElement>('.el-tabs__nav, [role="tablist"]')) {
+    if (!nav.getClientRects().length || nav.closest('table')) continue
+    const items = Array.from(nav.children).filter((child) =>
+      child.matches('.el-tabs__item, [role="tab"]'),
     )
-    if (candidates.length >= TAB_LABELS.length) group = commonTabGroup(candidates)
+    if (RANKING_TABS.every(([id]) => items.some((item) => item.id === id))) return nav
+    if (!fallback && RANKING_TABS.every(([, label]) =>
+      items.some((item) => item.textContent?.replace(/\s+/g, '') === label),
+    )) {
+      fallback = nav
+    }
   }
-  if (!group) return null
-  // 页签导航区：真实站点的榜单表格在 el-tabs__content 内，不能因为内容区有表格就放弃挂载。
-  const nav = group.querySelector<HTMLElement>(
-    '.el-tabs__header, .el-tabs__nav, [role="tablist"]',
-  )
-  if (nav && !nav.closest('table') && containsAllLabels(nav)) return group
-  // 没有独立导航区，或导航区不含六个标签：退回按整个容器严格判断，含表格就不挂载。
-  if (group.closest('table')) return null
-  if (group.querySelector('table')) return null
-  if (!containsAllLabels(group)) return null
-  return group
+  return fallback
 }
 
-function createEntry(): { host: HTMLElement; button: HTMLButtonElement; status: HTMLElement } {
+function createEntry(): HTMLElement {
   const container = document.createElement('div')
   container.id = HOST_ID
   const control = document.createElement('button')
   control.type = 'button'
   control.className = 'ysh-ranking-button'
-  control.textContent = '自定义排行榜 ↗'
-  control.setAttribute('aria-label', '打开自定义排行榜')
+  control.textContent = '自定义'
+  control.setAttribute('aria-label', '自定义：在新标签页打开排行榜')
+  control.title = '在新标签页打开自定义排行榜'
   const status = document.createElement('p')
   status.className = 'ysh-ranking-status'
+  status.setAttribute('role', 'alert')
   status.hidden = true
   container.append(control, status)
   control.addEventListener('click', () => {
     void openRanking(control, status)
   })
-  return { host: container, button: control, status }
+  control.addEventListener('keydown', (event) => {
+    // Element Plus 在 tablist 上监听方向键，不能把按钮当作原生页签处理。
+    if (event.key.startsWith('Arrow')) event.stopPropagation()
+  })
+  return container
 }
 
 async function openRanking(control: HTMLButtonElement, status: HTMLElement): Promise<void> {
   if (busy) return
   busy = true
   control.disabled = true
-  control.textContent = '正在打开…'
   status.hidden = true
   try {
     const response = (await chrome.runtime.sendMessage({
@@ -207,7 +148,6 @@ async function openRanking(control: HTMLButtonElement, status: HTMLElement): Pro
   } finally {
     busy = false
     control.disabled = false
-    control.textContent = '自定义排行榜 ↗'
   }
 }
 
@@ -216,31 +156,18 @@ function removeEntry(): void {
   host = null
 }
 
-/** 同一节点只移动位置，不重复创建；位置正确时不做任何 DOM 写入。 */
-function placeBefore(target: HTMLElement): void {
-  if (host && host.parentElement === target.parentElement && host.nextElementSibling === target) {
-    return
-  }
-  if (!host || !host.isConnected) {
-    ensureStyle()
-    host = createEntry().host
-  }
-  host.dataset.placement = 'tab-group'
-  target.parentElement?.insertBefore(host, target)
-}
-
 function sync(): void {
-  if (!isTopRankingPage()) {
+  const nav = isRankingUrl(window.location.href) ? findRankingTabNav() : null
+  if (!nav) {
     removeEntry()
     return
   }
-  const tabGroup = findRankingTabGroup()
-  // 页签尚未渲染或站点正在重绘：等待下一次调度，不猜测挂载点。
-  if (!tabGroup) {
-    if (host && !host.isConnected) host = null
-    return
+  if (!host) {
+    ensureStyle()
+    host = createEntry()
   }
-  placeBefore(tabGroup)
+  // Vue 重绘时复用入口；位置正确时跳过写入，避免触发观察器循环。
+  if (nav.lastElementChild !== host) nav.append(host)
 }
 
 function scheduleSync(): void {
@@ -251,30 +178,22 @@ function scheduleSync(): void {
   }, SYNC_DELAY_MS)
 }
 
-function startObserver(): void {
-  if (observer) return
-  observer = new MutationObserver(() => scheduleSync())
-  observer.observe(document.documentElement, { childList: true, subtree: true })
-}
-
-function startRouteWatcher(): void {
-  if (routeTimer !== undefined) return
-  lastHref = window.location.href
-  routeTimer = setInterval(() => {
-    if (window.location.href === lastHref) return
-    lastHref = window.location.href
-    scheduleSync()
-  }, ROUTE_POLL_MS)
-}
-
 export function startRankingEntry(): void {
-  if (started) return
+  if (started || window.top !== window) return
   started = true
   window.addEventListener('hashchange', scheduleSync)
   window.addEventListener('popstate', scheduleSync)
   window.addEventListener('pageshow', scheduleSync)
   window.addEventListener('pagehide', removeEntry)
-  startObserver()
-  startRouteWatcher()
+  const observer = new MutationObserver(scheduleSync)
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+
+  // Vue Router 可通过 replaceState 更新 hash，而不触发 hashchange。
+  let lastHref = window.location.href
+  setInterval(() => {
+    if (window.location.href === lastHref) return
+    lastHref = window.location.href
+    scheduleSync()
+  }, ROUTE_POLL_MS)
   scheduleSync()
 }

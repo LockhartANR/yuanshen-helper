@@ -11,7 +11,7 @@
 
 启动参数在 `src/features/player-stats/launch.ts` 统一解析：`source=csv` 表示独立 CSV，`view=analysis` 直达大表，`embed=analysis` 表示嵌入布局。外部 iframe 只允许 `embed=analysis`；未知取值或 `source=csv` 与 `embed` 同时出现都会显示参数错误。
 
-玩家页头部另提供「自定义排行榜」入口，打开独立的全站排行榜页面；popup 的「自定义排行榜」行和 openms.top 排行榜页的「自定义排行榜 ↗」也指向同一页面。它不复用当前玩家筛选、缓存或统计排除，说明见[全站自定义排行榜](custom-ranking.md)。
+玩家页头部另提供「自定义排行榜」入口，打开独立的全站排行榜页面。它不复用当前玩家筛选、缓存或统计排除，说明见[全站自定义排行榜](custom-ranking.md)。
 
 赛博大表的统计方式来自大表 **ArbiterStatsAuto**，默认参数为大表 **57.8**；原作者主页可从参数面板打开，也列在页面底部的统一「关于」卡片中。
 
