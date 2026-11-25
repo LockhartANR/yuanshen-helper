@@ -7,7 +7,9 @@ import {
   getRankingOverview,
 } from '../src/features/custom-ranking/collector'
 import { calculateRanking } from '../src/features/custom-ranking/calculation'
+import { compileConfig } from '../src/features/custom-ranking/config'
 import { DEFAULT_RANK_CONFIG } from '../src/features/custom-ranking/model'
+import { getVideoDetailFormula, loadRankingVideoDetails } from '../src/features/custom-ranking/video-details'
 import {
   clearGlobalRankingData,
   clearRankingCache,
@@ -174,6 +176,72 @@ describe('ID 区间排行榜采集', () => {
     const ranked = await calculateRanking(run.dataset.id, DEFAULT_RANK_CONFIG)
     expect(ranked.playerCount).toBe(2)
     expect(ranked.rows.map((item) => item.playerId)).toEqual([2, 1])
+  })
+
+  it('按原榜单口径列出求和录像和并列极值，数据变化后拒绝使用旧明细', async () => {
+    detailRows = [
+      { ...detail({ id: 1, player: 1, timems: 1000 }), cell8: 2 },
+      { ...detail({ id: 2, player: 1, timems: 1000 }), cell8: 4 },
+      { ...detail({ id: 3, player: 1, timems: 1001 }), cell8: 0 },
+      detail({ id: 4, player: 1, timems: 2000 }),
+      { ...detail({ id: 5, player: 2, timems: 1000 }), cell8: 8 },
+      { ...detail({ id: 6, player: 1, timems: 500, mode: '01' }), cell8: 8 },
+    ]
+    const run = await startCollection(BASE, { mode: 'initial', startId: 1, endId: 6, gapMs: 0 })
+    const config = compileConfig({
+      ...DEFAULT_RANK_CONFIG,
+      metrics: [
+        { id: 'cell8', name: 'cell8 局数', formula: 'sum(if(cell8 > 0, 1, null))', direction: 'desc', digits: 0 },
+        { id: 'min', name: '最快', formula: 'min(time)', direction: 'asc', digits: 2 },
+        { id: 'max', name: '最慢', formula: 'max(time)', direction: 'desc', digits: 2 },
+      ],
+    })
+    const ranked = await calculateRanking(run.dataset.id, config.config)
+    const player = ranked.players.find((item) => item.playerId === 1)!
+    expect(player.values).toEqual([2, 1, 2])
+    const details = (index: number) => loadRankingVideoDetails({
+      datasetId: ranked.datasetId,
+      version: ranked.datasetVideoVersion!,
+      playerId: player.playerId,
+      filter: config.filter,
+      formula: getVideoDetailFormula(config.metrics[index]!.compiled)!,
+      value: player.values[index]!,
+    })
+    expect(await details(0)).toEqual({
+      validCount: 2,
+      videos: [{ videoId: 1, value: 1, fields: [2] }, { videoId: 2, value: 1, fields: [4] }],
+    })
+    expect(await details(1)).toMatchObject({ validCount: 4, videos: [{ videoId: 1 }, { videoId: 2 }] })
+    expect(await details(2)).toMatchObject({ validCount: 4, videos: [{ videoId: 4 }] })
+
+    await putDataset({ ...run.dataset, detailCount: run.dataset.detailCount + 1 })
+    await expect(details(0)).rejects.toThrow('请重新计算排行榜')
+  })
+
+  it('嵌套参数不同的指标各自聚合，明细能命中对应的极值', async () => {
+    detailRows = [detail({ id: 1, player: 1, timems: 1490 })]
+    const run = await startCollection(BASE, { mode: 'initial', startId: 1, endId: 1, gapMs: 0 })
+    const config = compileConfig({
+      ...DEFAULT_RANK_CONFIG,
+      metrics: [
+        { id: 'outer', name: '外层精度', formula: 'max(round(round(time), 1))', direction: 'desc', digits: 0 },
+        { id: 'inner', name: '内层精度', formula: 'max(round(round(time, 1)))', direction: 'desc', digits: 0 },
+      ],
+    })
+    const ranked = await calculateRanking(run.dataset.id, config.config)
+    const player = ranked.players[0]!
+    expect(player.values).toEqual([1, 2])
+    for (const [index, value] of player.values.entries()) {
+      const details = await loadRankingVideoDetails({
+        datasetId: ranked.datasetId,
+        version: ranked.datasetVideoVersion!,
+        playerId: player.playerId,
+        filter: config.filter,
+        formula: getVideoDetailFormula(config.metrics[index]!.compiled)!,
+        value: value!,
+      })
+      expect(details.videos).toEqual([{ videoId: 1, value, fields: [1.49] }])
+    }
   })
 
   it('同步复用保存范围与 abstractbulk 元信息，不重新请求 detailbulk', async () => {

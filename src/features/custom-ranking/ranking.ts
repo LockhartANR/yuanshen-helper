@@ -140,18 +140,18 @@ export function clearRankingSort(result: RankingResult): RankingResult {
   return { ...result, rows, rowIndexById, sortMetricId: null }
 }
 
-export function pageRows(
-  rows: RankingResultRow[],
+export function pageRows<T>(
+  rows: readonly T[],
   page: number,
   pageSize: number,
-): RankingResultRow[] {
+): T[] {
   const size = Math.max(1, Math.floor(pageSize))
   const index = Math.max(0, Math.floor(page))
   return rows.slice(index * size, index * size + size)
 }
 
 /** 空榜返回 0 页，调用方据此隐藏分页栏。 */
-export function pageCount(rows: RankingResultRow[], pageSize: number): number {
+export function pageCount(rows: readonly unknown[], pageSize: number): number {
   return Math.ceil(rows.length / Math.max(1, Math.floor(pageSize)))
 }
 

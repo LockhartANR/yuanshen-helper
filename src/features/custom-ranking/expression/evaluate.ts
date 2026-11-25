@@ -274,29 +274,30 @@ interface MetricState {
   aggregates: Array<{ call: AggregateCall; state: AggregateState }>
 }
 
-function expressionKey(node: Expr): string {
+type ExpressionKey = Array<string | number | boolean | ExpressionKey>
+
+/** 用结构保留参数和子表达式边界，忽略源码位置。 */
+function expressionKey(node: Expr): ExpressionKey {
   switch (node.type) {
     case 'number':
-      return `n:${node.value}`
     case 'string':
-      return `s:${JSON.stringify(node.value)}`
     case 'boolean':
-      return `b:${node.value ? 1 : 0}`
+      return [node.type, node.value]
     case 'null':
-      return 'null'
+      return [node.type]
     case 'field':
-      return `f:${node.name}`
+      return [node.type, node.name]
     case 'unary':
-      return `u:${node.op}:${expressionKey(node.arg)}`
+      return [node.type, node.op, expressionKey(node.arg)]
     case 'binary':
-      return `x:${node.op}:${expressionKey(node.left)}:${expressionKey(node.right)}`
+      return [node.type, node.op, expressionKey(node.left), expressionKey(node.right)]
     case 'call':
-      return `c:${node.name}:${node.args.map(expressionKey).join(',')}`
+      return [node.type, node.name, ...node.args.map(expressionKey)]
   }
 }
 
 function aggregateKey(call: AggregateCall): string {
-  return `${call.name}:${call.inner ? expressionKey(call.inner) : ''}`
+  return JSON.stringify([call.name, call.inner ? expressionKey(call.inner) : null])
 }
 
 function createAggregateState(call: AggregateCall): AggregateState {

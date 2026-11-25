@@ -127,10 +127,27 @@ export async function getVideoRange(
   return db.getAll('globalRankVideos', range)
 }
 
-export async function getAllDatasetVideos(datasetId: string): Promise<GlobalRankVideoRow[]> {
+/** 读取录像和进度的同一事务快照。每次写入新区间或补齐详情都会递增对应计数。 */
+export async function scanRankingVideos(
+  datasetId: string,
+  visit: (row: GlobalRankVideoRow) => boolean | void,
+  options: { playerId?: number; version?: string } = {},
+): Promise<string> {
   const db = await getDb()
-  const range = IDBKeyRange.bound([datasetId, 1], [datasetId, Number.MAX_SAFE_INTEGER])
-  return db.getAll('globalRankVideos', range)
+  const tx = db.transaction(['globalRankDatasets', 'globalRankVideos'])
+  const dataset = await tx.objectStore('globalRankDatasets').get(datasetId)
+  const version = dataset ? `${dataset.intervalDone}:${dataset.detailCount}` : null
+  if (version === null || (options.version !== undefined && options.version !== version)) {
+    throw new Error('本次计算的数据已变更或清除，请重新计算排行榜')
+  }
+  const index = tx.objectStore('globalRankVideos').index('by-dataset-player')
+  const range = options.playerId === undefined
+    ? IDBKeyRange.bound([datasetId, 1], [datasetId, Number.MAX_SAFE_INTEGER])
+    : IDBKeyRange.only([datasetId, options.playerId])
+  let cursor = await index.openCursor(range)
+  while (cursor && visit(cursor.value) !== false) cursor = await cursor.continue()
+  await tx.done
+  return version
 }
 
 export async function getVideosByDetailState(

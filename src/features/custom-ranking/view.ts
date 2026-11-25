@@ -15,9 +15,12 @@ import {
   importConfig,
   newMetricId,
   validateConfig,
+  type CompiledConfig,
 } from './config'
 import { compileFormula } from './expression/validate'
 import { isFocusableControl } from './focus'
+import { getVideoDetailFormula } from './video-details'
+import { showRankingVideoDetails } from './video-details-dialog'
 import {
   getRankingOverview,
   normalizeScanRange,
@@ -137,6 +140,7 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
     name: string
     filterText: string
     signature: string
+    compiled: CompiledConfig
   } | null = null
   let names = new Map<number, UserRecord>()
   let namesRevision = 0
@@ -1284,15 +1288,21 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
     if (task && task.status === 'completed') pauseButton.hidden = true
   }
 
+  function focusVideoTrigger(playerId: string, metricId: string): void {
+    const row = resultBody.querySelector(`tr[data-player-id="${playerId}"]`)
+    const button = Array.from(row?.querySelectorAll<HTMLButtonElement>('button.ranking-video-trigger') ?? [])
+      .find((item) => item.dataset.metricId === metricId)
+    const target = button ?? settingsToggle
+    target.focus()
+  }
+
   function renderResults(): void {
+    const active = document.activeElement as HTMLElement | null
+    const focusedVideo = active?.classList.contains('ranking-video-trigger') && resultBody.contains(active)
+      ? active.dataset
+      : null
     // 表头重绘会替换按钮；记住当前排序按钮，重绘后恢复到同一指标。
-    const focusedMetricId = (() => {
-      if (typeof document === 'undefined') return null
-      const active = document.activeElement as HTMLElement | null
-      if (!active || typeof active.closest !== 'function') return null
-      const button = active.closest<HTMLElement>('button.ranking-sort-button')
-      return button?.dataset.metricId ?? null
-    })()
+    const focusedMetricId = active?.closest<HTMLElement>('button.ranking-sort-button')?.dataset.metricId
     if (result && result.datasetId !== latest?.id && result.datasetId !== ready?.id) {
       resetResultState()
     }
@@ -1314,17 +1324,24 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
       closeCandidates()
       searchFeedback.textContent = ''
       pager.hidden = true
+      if (focusedVideo) settingsToggle.focus()
       return
     }
 
     const currentResult = result
     // 列顺序取当前配置，值永远按 metricId 从结果向量取，不能按列下标冒充。
-    const displayMetrics = config.metrics.map(({ id, name, digits }) => ({
-      id,
-      name,
-      digits,
-      valueIndex: currentResult.metricIds.indexOf(id),
-    }))
+    const resultFormulaConfig = resultConfig?.compiled
+    const videoVersion = currentResult.datasetVideoVersion
+    const displayMetrics = config.metrics.map(({ id, name, digits }) => {
+      const compiled = resultFormulaConfig?.metrics.find((metric) => metric.id === id)?.compiled
+      return {
+        id,
+        name,
+        digits,
+        valueIndex: currentResult.metricIds.indexOf(id),
+        videoFormula: compiled ? getVideoDetailFormula(compiled) : null,
+      }
+    })
     const stale = resultConfig !== null && resultConfig.signature !== configSignature()
     const resultDataset = result.datasetId === latest?.id ? latest : ready
     const statusText = resultDataset?.status === 'ready'
@@ -1397,7 +1414,8 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
       tr.append(el('td', 'num', row.rank === null ? '—' : String(row.rank)))
       const playerCell = el('td')
       const record = names.get(row.playerId)
-      const playerLink = el('a', 'ranking-player-link', record ? displayName(record) : `#${row.playerId}`) as HTMLAnchorElement
+      const playerName = record ? displayName(record) : `#${row.playerId}`
+      const playerLink = el('a', 'ranking-player-link', playerName) as HTMLAnchorElement
       playerLink.href = `${SITE_ORIGIN}/#/player/${row.playerId}`
       playerLink.target = '_blank'
       playerLink.rel = 'noreferrer'
@@ -1414,6 +1432,27 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
         const cell = el('td', 'num ranking-metric-value')
         cell.append(el('b', undefined, formatMetricValue(value, metric.digits)))
         cell.append(el('span', 'ranking-sample', `有效 ${formatCount(index >= 0 ? row.samples[index] ?? 0 : 0)}`))
+        const formula = metric.videoFormula
+        if (formula && value !== null && videoVersion !== undefined && resultFormulaConfig) {
+          const details = el('button', 'ranking-video-trigger', '查看录像')
+          details.type = 'button'
+          const playerId = String(row.playerId)
+          details.dataset.playerId = playerId
+          details.dataset.metricId = metric.id
+          details.setAttribute('aria-haspopup', 'dialog')
+          details.setAttribute('aria-label', `查看录像 · ${playerName} · ${metric.name}`)
+          details.addEventListener('click', () => {
+            void showRankingVideoDetails(pageNode, {
+              datasetId: currentResult.datasetId,
+              version: videoVersion,
+              playerId: row.playerId,
+              filter: resultFormulaConfig.filter,
+              formula,
+              value,
+            }, `${playerName} · ${metric.name}的录像明细`, () => focusVideoTrigger(playerId, metric.id))
+          })
+          cell.append(details)
+        }
         tr.append(cell)
       }
       resultBody.append(tr)
@@ -1424,6 +1463,9 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
       : `共 ${formatCount(result.rows.length)} 位玩家 · 第 ${page + 1} / ${pages} 页`
     prevButton.disabled = pages === 0 || page <= 0
     nextButton.disabled = pages === 0 || page >= pages - 1
+    if (focusedVideo?.playerId && focusedVideo.metricId) {
+      focusVideoTrigger(focusedVideo.playerId, focusedVideo.metricId)
+    }
     if (focusedMetricId) {
       const buttons = resultHeadRow.querySelectorAll<HTMLButtonElement>('button.ranking-sort-button')
       for (const button of Array.from(buttons)) {
@@ -1978,8 +2020,9 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
       render()
       return
     }
+    let compiled: CompiledConfig
     try {
-      compileConfig(config)
+      compiled = compileConfig(config)
       validation = ''
     } catch (error) {
       validation = error instanceof ConfigError ? error.message : errorMessage(error)
@@ -2015,7 +2058,7 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
     renderDataset()
     try {
       const startedAt = Date.now()
-      const calculated = await calculateRanking(target.id, config, {
+      const calculated = await calculateRanking(target.id, compiled.config, {
         signal: calcController.signal,
       })
       if (seq !== calculationSeq || signature !== configSignature()) {
@@ -2031,8 +2074,9 @@ export async function mountGlobalRanking(root: HTMLElement): Promise<void> {
       result = calculated
       resultConfig = {
         name: config.name,
-        filterText: filterSummary(config.filter),
+        filterText: filterSummary(compiled.filter),
         signature,
+        compiled,
       }
       result.elapsedMs = Math.max(result.elapsedMs, Date.now() - startedAt)
       // 计算期间修改的默认排序、方向等展示设置仍生效，不丢弃有效聚合值。

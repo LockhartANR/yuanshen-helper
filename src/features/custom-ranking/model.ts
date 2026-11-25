@@ -194,6 +194,7 @@ export interface RankingResult {
   direction: RankDirection
   datasetId: string
   configKey: string
+  datasetVideoVersion?: string
   computedAt: number
   elapsedMs: number
   playerCount: number

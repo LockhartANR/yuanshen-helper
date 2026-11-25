@@ -5,6 +5,7 @@ import {
   startCollection,
 } from '../src/features/custom-ranking/collector'
 import { calculateRanking } from '../src/features/custom-ranking/calculation'
+import { loadRankingVideoDetails } from '../src/features/custom-ranking/video-details'
 import { saveSettings } from '../src/shared/settings'
 import { getAllUsers } from '../src/features/user-search/db'
 
@@ -41,6 +42,10 @@ vi.mock('../src/features/custom-ranking/collector', () => ({
 }))
 vi.mock('../src/features/custom-ranking/calculation', () => ({
   calculateRanking: vi.fn(),
+}))
+vi.mock('../src/features/custom-ranking/video-details', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/features/custom-ranking/video-details')>(),
+  loadRankingVideoDetails: vi.fn(),
 }))
 vi.mock('../src/features/custom-ranking/store', () => ({
   listConfigs: async () => [],
@@ -81,6 +86,8 @@ class TestElement {
   spellcheck = true
   hidden = false
   disabled = false
+  open = false
+  href = ''
   max = 0
   min = 0
   files: Array<{ text(): Promise<string> }> = []
@@ -140,6 +147,16 @@ class TestElement {
   }
   click(): void {
     for (const listener of this.listeners.get('click') ?? []) listener()
+  }
+  showModal(): void {
+    this.open = true
+  }
+  close(): void {
+    this.open = false
+    this.dispatch('close', undefined)
+  }
+  remove(): void {
+    if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this)
   }
   dispatch(type: string, event: unknown): void {
     for (const listener of this.listeners.get(type) ?? []) {
@@ -729,5 +746,51 @@ describe('全站排行榜页面', () => {
     expect(bodyRows(page)[0]?.dataset.playerId).toBe('1')
     expect(metricHeads(page)[1]?.attributes.get('aria-sort')).toBe('descending')
     expect(sortButtons(page)[1]?.textContent).toContain('平均 IOE ↓')
+  })
+
+  it('指标录像支持分页，返回榜单后关闭明细可恢复入口焦点', async () => {
+    vi.mocked(loadRankingVideoDetails).mockResolvedValueOnce({
+      validCount: 51,
+      videos: Array.from({ length: 51 }, (_, index) => ({
+        videoId: index + 1,
+        value: 2,
+        fields: [20, 10],
+      })),
+    })
+    const page = await mountCalculated({
+      ...makeResult(['speed', 'ioe', 'games'], [player(7, 2, 1, 51)], 'speed', 'desc'),
+      datasetVideoVersion: '1:51',
+    })
+    const videoTriggers = () => page.querySelectorAll('button.ranking-video-trigger')
+    const triggers = videoTriggers()
+    expect(triggers).toHaveLength(1)
+    triggers[0]!.click()
+    const dialog = page.all().find((node) => node.tag === 'dialog')!
+    const links = () => dialog.querySelectorAll('a.site-link')
+    await vi.waitFor(() => expect(links()).toHaveLength(50))
+    dialog.all().find((node) => node.tag === 'button' && node.textContent === '下一页')!.click()
+    expect(links().map((link) => link.href)).toEqual(['https://openms.top/#/video/51'])
+    expect(loadRankingVideoDetails).toHaveBeenCalledWith(expect.objectContaining({
+      datasetId: 'ready',
+      version: '1:51',
+      playerId: 7,
+      value: 2,
+    }), expect.any(AbortSignal))
+    const close = dialog.all().find((node) => node.tag === 'button' && node.textContent === '关闭')!
+    const focusListener = vi.mocked(window.addEventListener).mock.calls.find(([type]) => type === 'focus')?.[1]
+    if (typeof focusListener !== 'function') throw new Error('未注册窗口焦点刷新')
+    const refresh = () => focusListener.call(window, new Event('focus'))
+    close.focus()
+    refresh()
+    await vi.waitFor(() => expect(videoTriggers()[0]).not.toBe(triggers[0]))
+    const replacement = videoTriggers()[0]
+    close.click()
+    expect(page.all().some((node) => node.tag === 'dialog')).toBe(false)
+    expect(document.activeElement).toBe(replacement)
+
+    // 刷新也可能在明细关闭后才完成。
+    refresh()
+    await vi.waitFor(() => expect(videoTriggers()[0]).not.toBe(replacement))
+    expect(document.activeElement).toBe(videoTriggers()[0])
   })
 })

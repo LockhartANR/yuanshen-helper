@@ -1,52 +1,55 @@
-import type { CompiledConfig } from './config'
+import { compileConfig, type CompiledConfig } from './config'
 import { matchesFilter } from './filter'
 import { normalizeStoredFields } from './fields'
 import { createPlayerAccumulator, type PlayerAccumulator } from './expression/evaluate'
-import type { GlobalRankVideoRow, RankingResult, RankPlayerValues } from './model'
+import type { CompiledFormula } from './expression/validate'
+import type { GlobalRankVideoRow, RankConfig, RankFilter, RankingResult, RankPlayerValues } from './model'
 import { buildRankingView, eligiblePlayers, metricIndex } from './ranking'
+import { scanRankingVideos } from './store'
 
-interface PlayerState {
-  accumulator: PlayerAccumulator
-  games: number
+export function getRankingGameFields(row: GlobalRankVideoRow, filter: RankFilter) {
+  return row.detail && matchesFilter(row, filter) ? normalizeStoredFields(row.detail.fields) : null
 }
 
 /**
  * 逐条喂入录像的流式聚合器。
  * 只保留每位玩家一个聚合器，不把该玩家的录像数组留在内存里。
  */
-export class RankingAccumulator {
-  private readonly players = new Map<number, PlayerState>()
+class RankingAccumulator {
+  private readonly players = new Map<number, PlayerAccumulator>()
+  private readonly formulas: CompiledFormula[]
   private filtered = 0
   private scanned = 0
 
-  constructor(readonly compiled: CompiledConfig) {}
+  constructor(private readonly compiled: CompiledConfig) {
+    this.formulas = compiled.metrics.map((metric) => metric.compiled)
+  }
+
+  get videoCount(): number {
+    return this.scanned
+  }
 
   add(row: GlobalRankVideoRow): void {
     this.scanned += 1
-    if (!row.detail || !matchesFilter(row, this.compiled.filter)) return
+    const fields = getRankingGameFields(row, this.compiled.filter)
+    if (!fields) return
     const playerId = row.playerId
-    let state = this.players.get(playerId)
-    if (!state) {
-      state = {
-        accumulator: createPlayerAccumulator(this.compiled.metrics.map((metric) => metric.compiled)),
-        games: 0,
-      }
-      this.players.set(playerId, state)
+    let accumulator = this.players.get(playerId)
+    if (!accumulator) {
+      accumulator = createPlayerAccumulator(this.formulas)
+      this.players.set(playerId, accumulator)
     }
-    state.accumulator.addGame(normalizeStoredFields(row.detail.fields))
-    state.games += 1
+    accumulator.addGame(fields)
     this.filtered += 1
   }
 
   build(): BuiltRanking {
     const players: RankPlayerValues[] = []
-    for (const [playerId, state] of this.players) {
-      const result = state.accumulator.finish()
+    for (const [playerId, accumulator] of this.players) {
       players.push({
         playerId,
-        games: state.games,
-        values: result.values,
-        samples: result.samples,
+        games: accumulator.gameCount,
+        ...accumulator.finish(),
       })
     }
     return {
@@ -57,14 +60,14 @@ export class RankingAccumulator {
   }
 }
 
-export interface BuiltRanking {
+interface BuiltRanking {
   players: RankPlayerValues[]
   filteredGames: number
   videoCount: number
 }
 
 /** 聚合值按 metricIds 绑定；排序视图单独构建，接受结果时按配置的默认指标。 */
-export function createRankingResult(
+function createRankingResult(
   built: BuiltRanking,
   compiled: CompiledConfig,
   datasetId: string,
@@ -107,4 +110,24 @@ export function computeRanking(
   const accumulator = new RankingAccumulator(compiled)
   for (const row of rows) accumulator.add(row)
   return createRankingResult(accumulator.build(), compiled, datasetId, startedAt)
+}
+
+/** Worker 和备用主线程使用同一事务扫描、聚合和录像版本。 */
+export async function calculateStoredRanking(
+  datasetId: string,
+  config: RankConfig,
+  signal?: AbortSignal,
+  onProgress?: (scanned: number) => void,
+): Promise<RankingResult> {
+  if (signal?.aborted) throw new Error('计算已取消')
+  const startedAt = Date.now()
+  const compiled = compileConfig(config)
+  const accumulator = new RankingAccumulator(compiled)
+  const datasetVideoVersion = await scanRankingVideos(datasetId, (row) => {
+    if (signal?.aborted) return false
+    accumulator.add(row)
+    if (accumulator.videoCount % 5_000 === 0) onProgress?.(accumulator.videoCount)
+  })
+  if (signal?.aborted) throw new Error('计算已取消')
+  return { ...createRankingResult(accumulator.build(), compiled, datasetId, startedAt), datasetVideoVersion }
 }

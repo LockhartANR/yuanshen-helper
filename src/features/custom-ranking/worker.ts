@@ -1,7 +1,5 @@
-import { getDb } from '../../shared/db'
-import { createRankingResult, RankingAccumulator } from './calculator'
-import { compileConfig } from './config'
-import type { GlobalRankVideoRow, RankConfig } from './model'
+import { calculateStoredRanking } from './calculator'
+import type { RankConfig } from './model'
 
 interface CalculateMessage {
   type: 'calculate'
@@ -17,8 +15,7 @@ interface CancelMessage {
 
 type WorkerMessage = CalculateMessage | CancelMessage
 
-let cancelled = new Set<string>()
-let current: string | null = null
+let current: { requestId: string; controller: AbortController } | null = null
 
 const scope = self as unknown as {
   postMessage(message: unknown): void
@@ -29,55 +26,30 @@ const scope = self as unknown as {
 }
 
 async function calculate(message: CalculateMessage): Promise<void> {
-  current = message.requestId
-  const startedAt = Date.now()
+  const { datasetId, config, requestId } = message
+  const controller = new AbortController()
+  current = { requestId, controller }
   try {
-    const compiled = compileConfig(message.config)
-    const db = await getDb()
-    const range = IDBKeyRange.bound(
-      [message.datasetId, 1],
-      [message.datasetId, Number.MAX_SAFE_INTEGER],
-    )
-    const accumulator = new RankingAccumulator(compiled)
-    let scanned = 0
-    let lastReport = 0
-    let cursor = await db
-      .transaction('globalRankVideos')
-      .store.index('by-dataset-player')
-      .openCursor(range)
-    while (cursor) {
-      if (cancelled.has(message.requestId)) return
-      accumulator.add(cursor.value as GlobalRankVideoRow)
-      scanned += 1
-      if (scanned - lastReport >= 5_000) {
-        lastReport = scanned
-        scope.postMessage({
-          type: 'progress',
-          requestId: message.requestId,
-          scanned,
-        })
-      }
-      cursor = await cursor.continue()
-    }
-    if (cancelled.has(message.requestId)) return
-    const result = createRankingResult(accumulator.build(), compiled, message.datasetId, startedAt)
-    scope.postMessage({ type: 'done', requestId: message.requestId, result })
+    const result = await calculateStoredRanking(datasetId, config, controller.signal, (scanned) => {
+      scope.postMessage({ type: 'progress', requestId, scanned })
+    })
+    scope.postMessage({ type: 'done', requestId, result })
   } catch (error) {
+    if (controller.signal.aborted) return
     scope.postMessage({
       type: 'error',
-      requestId: message.requestId,
+      requestId,
       message: error instanceof Error ? error.message : String(error),
     })
   } finally {
-    if (current === message.requestId) current = null
-    cancelled.delete(message.requestId)
+    current = null
   }
 }
 
 scope.addEventListener('message', (event: MessageEvent<WorkerMessage>) => {
   const message = event.data
   if (message.type === 'cancel') {
-    cancelled.add(message.requestId)
+    if (current?.requestId === message.requestId) current.controller.abort()
     return
   }
   if (message.type === 'calculate') {

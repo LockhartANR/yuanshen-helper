@@ -1,7 +1,5 @@
-import { computeRanking } from './calculator'
-import { compileConfig } from './config'
+import { calculateStoredRanking } from './calculator'
 import type { RankingResult, RankConfig } from './model'
-import { getAllDatasetVideos } from './store'
 
 export interface CalculationOptions {
   signal?: AbortSignal
@@ -41,13 +39,10 @@ export async function calculateRanking(
   config: RankConfig,
   options: CalculationOptions = {},
 ): Promise<RankingResult> {
-  const compiled = compileConfig(config)
   if (typeof Worker === 'undefined') {
-    if (options.signal?.aborted) throw new Error('计算已取消')
-    const rows = await getAllDatasetVideos(datasetId)
-    if (options.signal?.aborted) throw new Error('计算已取消')
-    options.onProgress?.(rows.length)
-    return computeRanking(rows, compiled, datasetId)
+    const result = await calculateStoredRanking(datasetId, config, options.signal)
+    options.onProgress?.(result.videoCount)
+    return result
   }
 
   const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })

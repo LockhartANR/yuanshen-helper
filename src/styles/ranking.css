@@ -610,6 +610,66 @@ body.ranking-settings-open {
   font-weight: 400;
 }
 
+.ranking-video-trigger {
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.ranking-video-trigger:hover {
+  text-decoration: underline;
+}
+
+.ranking-video-dialog {
+  width: min(680px, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.ranking-video-dialog::backdrop {
+  background: rgb(15 23 42 / 45%);
+}
+
+.ranking-video-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ranking-video-header h2 {
+  margin: 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.ranking-video-header button {
+  flex: none;
+}
+
+.ranking-video-formula {
+  display: block;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.ranking-video-table-wrap {
+  max-height: 50dvh;
+  overflow: auto;
+}
+
+.ranking-video-table {
+  min-width: 0;
+}
+
 .ranking-pager {
   display: flex;
   flex-wrap: wrap;
