@@ -1,7 +1,7 @@
-import { isObject, jsonObject, type HistoryRecord, type JsonObject } from './model'
+import { isObject, jsonObject, type ReplayRecord, type JsonObject } from './model'
 
 export interface ReplayDecoder {
-  decode(record: HistoryRecord, signal?: AbortSignal): Promise<JsonObject>
+  decode(record: ReplayRecord, signal?: AbortSignal): Promise<JsonObject>
   dispose(): void
 }
 
@@ -10,7 +10,7 @@ export class WorkerReplayDecoder implements ReplayDecoder {
   private worker: Worker | undefined
   private requestId = 0
 
-  async decode(record: HistoryRecord, signal?: AbortSignal): Promise<JsonObject> {
+  async decode(record: ReplayRecord, signal?: AbortSignal): Promise<JsonObject> {
     signal?.throwIfAborted()
     const worker = this.worker ??= new Worker(new URL('./archive-worker.ts', import.meta.url), { type: 'module' })
     const requestId = ++this.requestId

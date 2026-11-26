@@ -41,9 +41,13 @@ export type ReplayPayload =
   | { encoding: '7z'; data: string }
   | { encoding: 'json'; data: JsonObject }
 
-export interface HistoryRecord {
-  metadata: HistoryMetadata
+export interface ReplayRecord {
+  metadata: Pick<HistoryMetadata, 'game' | 'mode' | 'scoreMs'>
   payload: ReplayPayload
+}
+
+export interface HistoryRecord extends ReplayRecord {
+  metadata: HistoryMetadata
 }
 
 export type HistoryRequest =
@@ -130,9 +134,15 @@ export function parseHistoryPage(value: unknown): HistoryPage {
     }) }
 }
 
-export function parseHistoryRecord(value: unknown): HistoryRecord {
+export function parseReplayRecord(value: unknown): ReplayRecord {
   if (!isObject(value) || !isObject(value.payload)) throw new Error('站点返回的录像格式无效')
-  const metadata = parseMetadata(value.metadata)
+  const entry = value.metadata
+  if (!isObject(entry) || !isMinigame(entry.game) || !safeInteger(entry.scoreMs, 1)) {
+    throw new Error('录像游戏或成绩无效')
+  }
+  const mode = jsonObject(entry.mode, 16 * 1024)
+  if (typeof mode.key !== 'string' || !mode.key.length || mode.key.length > 120) throw new Error('录像模式无效')
+  const metadata = { game: entry.game, mode, scoreMs: entry.scoreMs }
   const payload = value.payload
   if (payload.encoding === '7z' && typeof payload.data === 'string' && payload.data.length > 0
     && payload.data.length <= Math.ceil(MAX_ARCHIVE_BYTES / 3) * 4
@@ -143,6 +153,12 @@ export function parseHistoryRecord(value: unknown): HistoryRecord {
     return { metadata, payload: { encoding: 'json', data: jsonObject(payload.data) } }
   }
   throw new Error('录像编码无效或录像过大')
+}
+
+export function parseHistoryRecord(value: unknown): HistoryRecord {
+  const record = parseReplayRecord(value)
+  if (!isObject(value)) throw new Error('站点返回的录像格式无效')
+  return { ...record, metadata: parseMetadata(value.metadata) }
 }
 
 /** Site densities are percentage values; convert their decimal representation without rounding. */

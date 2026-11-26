@@ -6,7 +6,7 @@ interface Manifest {
   permissions: string[]
   host_permissions: string[]
   content_security_policy?: { extension_pages: string }
-  content_scripts: Array<{ matches: string[]; js: string[]; run_at: string }>
+  content_scripts: Array<{ matches: string[]; js: string[]; run_at: string; world?: string }>
   web_accessible_resources?: Array<{ resources: string[]; matches: string[] }>
 }
 
@@ -21,16 +21,22 @@ describe('manifest 资源范围', () => {
     expect(manifest.content_security_policy?.extension_pages).toBe("script-src 'self' 'wasm-unsafe-eval'; object-src 'self'")
   })
   it('内容脚本仍输出到 content/upload.js 并只在 openms.top 运行', () => {
-    expect(manifest.content_scripts).toHaveLength(1)
-    expect(manifest.content_scripts[0]).toMatchObject({
+    expect(manifest.content_scripts).toHaveLength(2)
+    expect(manifest.content_scripts[1]).toMatchObject({
       matches: ['https://openms.top/*'],
       js: ['content/upload.js'],
     })
   })
 
-  it('只向 openms.top 开放嵌入所需的 player.html', () => {
+  it('仅在站点 MAIN world 的 document_start 留存原生录像响应', () => {
+    expect(manifest.content_scripts[0]).toEqual({
+      matches: ['https://openms.top/*'], js: ['content/minigame-capture.js'], run_at: 'document_start', world: 'MAIN',
+    })
+  })
+
+  it('只向 openms.top 开放玩家嵌入页和最小录像解压页', () => {
     expect(manifest.web_accessible_resources).toEqual([
-      { resources: ['player.html'], matches: ['https://openms.top/*'] },
+      { resources: ['player.html', 'minigame-frame.html'], matches: ['https://openms.top/*'] },
     ])
   })
 })

@@ -18,13 +18,19 @@
   "content_scripts": [
     {
       "matches": ["https://openms.top/*"],
+      "js": ["content/minigame-capture.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://openms.top/*"],
       "js": ["content/upload.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["player.html"],
+      "resources": ["player.html", "minigame-frame.html"],
       "matches": ["https://openms.top/*"]
     }
   ],

@@ -8,7 +8,9 @@ import './upload'
 import { startPlayerAnalysis } from './player-analysis'
 import { startRankingEntry } from './ranking-entry'
 import { registerMinigameHistory } from './minigame-history'
+import { startMinigamePlayback } from './minigame-playback'
 
 startPlayerAnalysis()
 startRankingEntry()
 registerMinigameHistory()
+startMinigamePlayback()

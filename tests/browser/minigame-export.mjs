@@ -31,6 +31,16 @@ function pack(value) {
   return bytes
 }
 const packed = { 'left-click': pack(mouse), 'flag-chord': pack(flag), 'missing-cell': pack(missing), reaction: pack(reaction), 'multi-touch': pack(touch) }
+const playbackFixture = await readFile('tests/browser/fixtures/minigame-playback.js', 'utf8')
+const replayRequests = []
+const onlineFixtures = new Map([
+  [95, { bytes: packed['left-click'], score: 1234 }],
+  [96, { bytes: packed['left-click'], score: 2345 }],
+  [97, { bytes: packed['left-click'], score: 3456 }],
+  [98, { bytes: packed['left-click'], score: 4567 }],
+  [400, { bytes: [1, 2, 3], score: 1234 }],
+])
+let releaseDelayedReplay
 const stamp = new Date('2026-11-25T12:00:00Z').getTime()
 function row(id, game = 'left-click') {
   const key = game === 'multi-touch' ? 'e' : game === 'left-click' && id === 590 ? 'i' : 'b'
@@ -65,6 +75,18 @@ try {
     if (url.origin !== 'https://openms.top') { externalRequests.push(url.href); await route.abort(); return }
     if (url.pathname === '/api/common/loginauto') {
       await route.fulfill({ contentType: 'application/json', body: '{"user":null}' })
+    } else if (url.pathname === '/replay-fixture') {
+      await route.fulfill({ contentType: 'text/html;charset=utf-8', body: '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>原生回放测试</title><style>body{font:14px sans-serif;color:var(--ui-text-color-regular,#303133);background:var(--ui-bg-color,#fff);padding:16px}.training-page{display:grid;gap:.75rem;min-width:0;text-align:center}.training-controls,.minigame-replay-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.training-controls{justify-content:center}.minigame-replay-controls{width:100%;max-width:52rem;min-width:0;margin-inline:auto}.minigame-replay-controls input{flex:1 1 10rem;min-width:0;margin:0}.dark{--ui-bg-color:#141414;--ui-text-color-regular:#ddd;--ui-color-primary:#337ecc}</style><script src="/replay-fixture.js"></script></head><body></body></html>' })
+    } else if (url.pathname === '/replay-fixture.js') {
+      await route.fulfill({ contentType: 'text/javascript', body: playbackFixture })
+    } else if (/^\/api\/minigame\/[^/]+\/replay$/.test(url.pathname)) {
+      const player = Number(url.searchParams.get('player'))
+      replayRequests.push({ player, key: url.searchParams.get('key') })
+      const fixture = onlineFixtures.get(player)
+      if (player === 97) await new Promise((resolve) => { releaseDelayedReplay = resolve })
+      if (!fixture) await route.fulfill({ status: 404, body: 'Replay not found' })
+      else await route.fulfill({ contentType: 'application/x-7z-compressed',
+        headers: { 'X-Minigame-Score': String(fixture.score) }, body: Buffer.from(fixture.bytes) })
     } else {
       await route.fulfill({ contentType: 'text/html;charset=utf-8', body: '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>小游戏测试站点</title></head><body>仅用于元神助手测试的模拟站点</body></html>' })
     }
@@ -344,13 +366,241 @@ try {
   assert.equal(await options.getByRole('link', { name: '小游戏录像 ↗', exact: true }).getAttribute('href'), `chrome-extension://${extensionId}/minigame.html`)
   passed('popup and settings expose the new export entry')
 
+  // Exercise the native-page entry through its actual MAIN/ISOLATED scripts and embedded decoder.
+  await seed(fixtures)
+  const native = await context.newPage()
+  native.on('pageerror', (error) => browserErrors.push(error.message))
+  const nativeButton = native.getByRole('button', { name: '导出录像', exact: true })
+  async function assertNativeExportLayout() {
+    const layout = await native.evaluate(() => {
+      const host = document.getElementById('ysh-minigame-export')
+      const button = host?.querySelector('button')
+      const page = document.querySelector('.training-page')
+      const timeline = page?.querySelector('.minigame-replay-controls')
+      const anchor = timeline ?? page?.querySelector('.training-controls')
+      if (!host || !button || !anchor) throw new Error('Missing native export layout')
+      const row = host.getBoundingClientRect()
+      const action = button.getBoundingClientRect()
+      const reference = anchor.getBoundingClientRect()
+      const status = host.querySelector('[role="status"]')
+      return {
+        adjacent: timeline ? host.nextElementSibling === anchor : host.previousElementSibling === anchor,
+        separate: timeline ? row.bottom <= reference.top : row.top >= reference.bottom,
+        rowOffset: Math.abs(row.x + row.width / 2 - reference.x - reference.width / 2),
+        buttonOffset: Math.abs(action.x + action.width / 2 - reference.x - reference.width / 2),
+        statusBelow: !status || status.hidden || status.getBoundingClientRect().top >= action.bottom,
+      }
+    })
+    assert.equal(layout.adjacent, true)
+    assert.equal(layout.separate, true)
+    assert.ok(layout.rowOffset < 1, 'export row should be centered with the native controls')
+    assert.ok(layout.buttonOffset < 1, 'export button should stay centered when status is shown')
+    assert.equal(layout.statusBelow, true)
+  }
+  async function injectedDownload() {
+    const pages = context.pages().length
+    const url = native.url()
+    const waiting = native.waitForEvent('download', { timeout: 25_000 })
+    await nativeButton.click()
+    const download = await waiting
+    assert.equal(await download.failure(), null)
+    const path = join(output, `injected-${download.suggestedFilename()}`)
+    await download.saveAs(path)
+    const text = await readFile(path, 'utf8')
+    await native.getByRole('status').filter({ hasText: '已生成单局录像' }).waitFor()
+    assert.equal(context.pages().length, pages)
+    assert.equal(native.url(), url)
+    assert.equal(await native.locator('#ysh-minigame-decoder').count(), 0)
+    assert.equal(await native.getByRole('button', { name: '取消导出', exact: true }).isVisible(), false)
+    await assertNativeExportLayout()
+    return { json: JSON.parse(text), text, name: download.suggestedFilename() }
+  }
+  await native.goto('https://openms.top/replay-fixture#/minigame/left-click?history=590')
+  await nativeButton.waitFor()
+  const nativeLocal = await injectedDownload()
+  assert.equal(nativeLocal.name, densitySingle.name)
+  assert.deepEqual(nativeLocal.json, densitySingle.json)
+  assert.equal(nativeLocal.text, densitySingle.text)
+  assert.equal(await native.locator('#ysh-minigame-export a').count(), 0)
+  assert.equal((await injectedDownload()).text, nativeLocal.text)
+  await native.getByRole('button', { name: '播放', exact: true }).click()
+  assert.equal(await native.getByRole('button', { name: '暂停', exact: true }).count(), 1)
+  await native.evaluate(() => { window.renderFixturePlayback(); window.renderFixturePlayback() })
+  await nativeButton.waitFor()
+  assert.equal(await native.locator('#ysh-minigame-export').count(), 1)
+  await assertNativeExportLayout()
+  passed('native local-playback downloads and repeated downloads stay on the same tab, clean up the decoder and preserve playback controls')
+
+  await native.screenshot({ path: join(output, 'native-light.png'), fullPage: true })
+  await native.evaluate(() => document.documentElement.classList.add('dark'))
+  await native.screenshot({ path: join(output, 'native-dark.png'), fullPage: true })
+  await native.setViewportSize({ width: 390, height: 844 })
+  assert.equal(await native.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  await assertNativeExportLayout()
+  await native.screenshot({ path: join(output, 'native-narrow.png'), fullPage: true })
+  await native.setViewportSize({ width: 1280, height: 900 })
+  await native.evaluate(() => document.documentElement.classList.remove('dark'))
+  passed('export has its own centered row above the timeline in light, dark and narrow native playback layouts')
+
+  await native.evaluate(() => window.switchFixturePlayback('#/minigame/missing-cell?history=588'))
+  await nativeButton.waitFor()
+  const nativeMissing = await injectedDownload()
+  assert.equal(nativeMissing.name, 'missing-cell-beg-1.234s-588.json')
+  assert.deepEqual(nativeMissing.json.replay, missing)
+  passed('missing-cell playback exports in a centered row below its level controls without a timeline')
+
+  // Full navigation makes the request begin in the head, before the idle content script starts.
+  await native.goto('https://openms.top/replay-fixture?early=1#/minigame/left-click?player=95&key=b-50-v1')
+  await nativeButton.waitFor()
+  assert.deepEqual(await native.evaluate(() => window.fixtureBytes), packed['left-click'])
+  onlineFixtures.set(95, { bytes: pack({ ...mouse, fixture: 'new-pb' }), score: 999 })
+  const nativeOnline = await injectedDownload()
+  assert.equal(nativeOnline.name, 'left-click-beg-1-2-1.234s-player95.json')
+  assert.deepEqual(nativeOnline.json, { playerId: 95, rankingKey: 'left-click-b-50-v1', game: 'left-click',
+    mode: { key: 'b', rows: 8, columns: 8, density: 50 }, scoreMs: 1234, replay: mouse })
+  assert.equal(replayRequests.filter((request) => request.player === 95).length, 1)
+  passed('early native XHR capture exports the playing recording even after the server PB changes, without refetching')
+
+  await native.evaluate(() => window.switchFixturePlayback('#/minigame/left-click?player=96&key=i-75-v1', 'fetch'))
+  await nativeButton.waitFor()
+  const nativeFetch = await injectedDownload()
+  assert.equal(nativeFetch.name, 'left-click-int-3-4-2.345s-player96.json')
+  assert.equal(nativeFetch.json.playerId, 96)
+  assert.deepEqual(await native.evaluate(() => window.fixtureBytes), packed['left-click'])
+  assert.deepEqual(await native.evaluate(async () => (await fetch('/api/common/loginauto')).json()), { user: null })
+  passed('SPA fetch playback uses the new mode and player, preserving the website response and unrelated fetch calls')
+
+  await native.evaluate(() => { void window.switchFixturePlayback('#/minigame/left-click?player=97&key=e-87.5-v1') })
+  await native.waitForFunction(() => !document.querySelector('.training-page'))
+  for (let attempt = 0; !releaseDelayedReplay && attempt < 200; attempt++) await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.ok(releaseDelayedReplay, 'the delayed native request should have started')
+  await native.evaluate(() => window.switchFixturePlayback('#/minigame/left-click?player=98&key=b-50-v1'))
+  await nativeButton.waitFor()
+  releaseDelayedReplay()
+  const latest = await injectedDownload()
+  assert.equal(latest.name, 'left-click-beg-1-2-4.567s-player98.json')
+  assert.equal(latest.json.playerId, 98)
+  passed('late responses from a previous playback cannot overwrite the current recording')
+
+  await native.evaluate(() => history.replaceState({}, '', '#/minigame/left-click'))
+  await nativeButton.waitFor({ state: 'detached' })
+  passed('export button is removed when leaving the replay route')
+
+  await native.goto('https://openms.top/replay-fixture?no-load=1#/minigame/left-click?player=95&key=b-50-v1')
+  await nativeButton.waitFor()
+  const pageCount = context.pages().length
+  await nativeButton.click()
+  await native.getByRole('status').filter({ hasText: '请刷新页面后重试' }).waitFor()
+  assert.equal(context.pages().length, pageCount)
+  assert.equal(replayRequests.filter((request) => request.player === 95).length, 1)
+  passed('missing current response reports a refresh instruction instead of downloading a different server replay')
+
+  const invalidFrame = await native.evaluate(async (extensionId) => {
+    const frame = document.createElement('iframe')
+    frame.hidden = true
+    frame.src = `chrome-extension://${extensionId}/minigame-frame.html`
+    const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }))
+    document.body.append(frame)
+    await loaded
+    const channel = new MessageChannel()
+    const result = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Decoder validation timed out')), 5000)
+      channel.port1.onmessage = (event) => { clearTimeout(timeout); resolve(event.data) }
+    })
+    frame.contentWindow.postMessage({ type: 'YUANSHEN_MINIGAME_DECODE', url: location.href,
+      record: { metadata: { game: 'reaction' } } }, `chrome-extension://${extensionId}`, [channel.port2])
+    try { return await result } finally { channel.port1.close(); frame.remove() }
+  }, extensionId)
+  assert.equal(invalidFrame.ok, false)
+  assert.match(invalidFrame.error, /格式无效/)
+  passed('embedded decoder validates incoming replay data before starting a worker')
+
+  await native.evaluate(() => window.switchFixturePlayback('#/minigame/left-click?player=400&key=b-50-v1'))
+  await nativeButton.waitFor()
+  const failedDownloads = []
+  native.on('download', (download) => failedDownloads.push(download.suggestedFilename()))
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await nativeButton.click()
+    await native.getByRole('status').filter({ hasText: '7z 录像解压失败' }).waitFor()
+    assert.equal(await native.locator('#ysh-minigame-decoder').count(), 0)
+    assert.equal(await nativeButton.isEnabled(), true)
+    assert.equal(context.pages().length, pageCount)
+  }
+  assert.equal(replayRequests.filter((request) => request.player === 400).length, 1)
+  assert.deepEqual(failedDownloads, [])
+  native.removeAllListeners('download')
+  passed('corrupt native replay reports failure and retries on the same tab using the captured data without downloading')
+
+  // Delay worker startup in new decoder frames so cancellation and route changes are deterministic.
+  await context.addInitScript(() => {
+    if (location.protocol !== 'chrome-extension:' || location.pathname !== '/minigame-frame.html') return
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      postMessage(...args) { setTimeout(() => super.postMessage(...args), 1200) }
+    }
+  })
+  await native.evaluate(() => window.switchFixturePlayback('#/minigame/left-click?history=590'))
+  const canceledDownloads = []
+  const trackCanceled = (download) => canceledDownloads.push(download.suggestedFilename())
+  native.on('download', trackCanceled)
+  await nativeButton.click()
+  await native.locator('#ysh-minigame-decoder').waitFor({ state: 'attached' })
+  await native.getByRole('button', { name: '取消导出', exact: true }).click()
+  await native.getByRole('status').filter({ hasText: '已取消导出，未生成文件' }).waitFor()
+  assert.equal(await native.locator('#ysh-minigame-decoder').count(), 0)
+  assert.equal(await nativeButton.isEnabled(), true)
+  native.off('download', trackCanceled)
+  assert.equal((await injectedDownload()).text, nativeLocal.text)
+  assert.deepEqual(canceledDownloads, [])
+  passed('cancel removes the active decoder, produces no file and allows an immediate retry on the same tab')
+
+  // Exercise cached-page lifecycle events explicitly: Chromium disables BFCache in this test profile.
+  const restoredDownloads = []
+  const trackRestored = (download) => restoredDownloads.push(download.suggestedFilename())
+  native.on('download', trackRestored)
+  await nativeButton.click()
+  await native.locator('#ysh-minigame-decoder').waitFor({ state: 'attached' })
+  await native.getByRole('status').filter({ hasText: '正在解压当前录像' }).waitFor()
+  await native.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+  })
+  await nativeButton.waitFor()
+  assert.equal(await native.locator('#ysh-minigame-decoder').count(), 0)
+  assert.equal(await nativeButton.isEnabled(), true)
+  assert.equal(await native.getByRole('button', { name: '取消导出', exact: true }).isVisible(), false)
+  assert.equal(await native.locator('#ysh-minigame-export [role="status"]').textContent(), '')
+  assert.equal(await native.locator('#ysh-minigame-export [role="status"]').isHidden(), true)
+  assert.deepEqual(restoredDownloads, [])
+  await assertNativeExportLayout()
+  await native.screenshot({ path: join(output, 'native-restored.png'), fullPage: true })
+  assert.equal((await injectedDownload()).text, nativeLocal.text)
+  assert.deepEqual(restoredDownloads, [nativeLocal.name])
+  native.off('download', trackRestored)
+  passed('cached-page lifecycle restoration clears the stopped export status and allows a fresh download')
+
+  native.on('download', trackCanceled)
+  await nativeButton.click()
+  await native.locator('#ysh-minigame-decoder').waitFor({ state: 'attached' })
+  await native.evaluate(() => window.switchFixturePlayback('#/minigame/missing-cell?history=588'))
+  await native.locator('#ysh-minigame-decoder').waitFor({ state: 'detached' })
+  assert.equal(await nativeButton.isEnabled(), true)
+  assert.equal(await native.locator('#ysh-minigame-export [role="status"]').textContent(), '')
+  native.off('download', trackCanceled)
+  const afterSwitch = await injectedDownload()
+  assert.equal(afterSwitch.name, nativeMissing.name)
+  assert.deepEqual(canceledDownloads, [])
+  passed('switching playback aborts the old export and a fresh click downloads only the new recording')
+
   assert.deepEqual(browserErrors, [])
   await writeFile(join(output, 'result.json'), JSON.stringify({ timezone, passed: successes, browserErrors, externalRequests }, null, 2))
   console.log(`Browser verification passed: ${successes.length} checks. Artifacts: ${output}`)
 } catch (error) {
   await writeFile(join(output, 'failure.json'), JSON.stringify({ passed: successes, browserErrors, error: String(error) }, null, 2))
   for (const page of context.pages()) {
-    if (page.url().includes('/minigame.html')) await page.screenshot({ path: join(output, 'failure.png'), fullPage: true }).catch(() => undefined)
+    if (page.url().includes('/minigame.html') || page.url().includes('/replay-fixture')) {
+      await page.screenshot({ path: join(output, page.url().includes('/replay-fixture') ? 'failure-native.png' : 'failure.png'), fullPage: true }).catch(() => undefined)
+    }
   }
   throw error
 } finally { await context.close() }

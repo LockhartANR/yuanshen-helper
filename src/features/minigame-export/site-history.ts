@@ -2,7 +2,7 @@ import { bufferToBase64 } from '../upload-watch/bytes'
 import {
   HISTORY_DATABASE, HISTORY_PAGE_SIZE, HISTORY_STORE, MAX_ARCHIVE_BYTES,
   isObject, jsonObject, parseMetadata, safeInteger, sameMetadata,
-  type HistoryIssue, type HistoryMetadata, type HistoryPage, type HistoryRecord,
+  type HistoryIssue, type HistoryMetadata, type HistoryPage, type HistoryRecord, type Minigame,
 } from './model'
 
 /** Never supply a version, create a store, or migrate the website's database. */
@@ -102,21 +102,35 @@ export async function listSiteHistory(afterId: number, upperId?: number, version
 
 export async function readSiteHistory(expected: HistoryMetadata, version: number,
   factory: IDBFactory = indexedDB): Promise<HistoryRecord> {
+  const record = await readRecord(expected.id, version, factory)
+  if (!sameMetadata(record.metadata, expected)) throw new Error('这条历史记录已发生变化，请重新读取历史')
+  return record
+}
+
+/** Read one playback by its exact local ID, without scanning or changing the website history. */
+export async function readLocalPlayback(game: Minigame, id: number,
+  factory: IDBFactory = indexedDB): Promise<HistoryRecord> {
+  const record = await readRecord(id, undefined, factory)
+  if (record.metadata.game !== game) throw new Error('本地录像与当前游戏不一致')
+  return record
+}
+
+async function readRecord(id: number, version: number | undefined, factory: IDBFactory): Promise<HistoryRecord> {
   const db = await openHistoryDatabase(factory)
   if (db === null) throw new Error('小游戏历史已被清除')
   try {
     assertVersion(db, version)
-    const value: unknown = await requestResult(db.transaction(HISTORY_STORE, 'readonly').objectStore(HISTORY_STORE).get(expected.id))
+    const value: unknown = await requestResult(db.transaction(HISTORY_STORE, 'readonly').objectStore(HISTORY_STORE).get(id))
     if (!isObject(value)) throw new Error('这条本地录像已不存在，请重新读取历史')
     const metadata = parseMetadata(value)
-    if (!sameMetadata(metadata, expected)) throw new Error('这条历史记录已发生变化，请重新读取历史')
+    if (metadata.id !== id) throw new Error('历史记录编号与主键不一致')
     if (value.replay instanceof ArrayBuffer) {
       if (value.replay.byteLength === 0 || value.replay.byteLength > MAX_ARCHIVE_BYTES) {
         throw new Error('压缩录像为空或超过 16 MiB，未导出')
       }
       return { metadata, payload: { encoding: '7z', data: bufferToBase64(value.replay) } }
     }
-    if (version >= 3) throw new Error('新版历史缺少有效的压缩录像')
+    if (db.version >= 3) throw new Error('新版历史缺少有效的压缩录像')
     const replay = metadata.game === 'missing-cell'
       ? { ...(value.version === undefined ? {} : { version: value.version }), rounds: value.rounds }
       : value.replay

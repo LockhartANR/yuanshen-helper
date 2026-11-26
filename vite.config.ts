@@ -19,6 +19,7 @@ export default defineConfig({
         player: resolve(root, 'player.html'),
         ranking: resolve(root, 'ranking.html'),
         minigame: resolve(root, 'minigame.html'),
+        minigameFrame: resolve(root, 'minigame-frame.html'),
         offscreen: resolve(root, 'offscreen.html'),
       },
     },

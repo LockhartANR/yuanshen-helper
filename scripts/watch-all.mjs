@@ -7,6 +7,7 @@ const targets = [
   { name: 'pages', args: [] },
   { name: 'worker', args: ['--config', 'vite.background.config.ts'] },
   { name: 'content', args: ['--config', 'vite.content.config.ts'] },
+  { name: 'capture', args: ['--config', 'vite.content.config.ts', '--mode', 'capture'] },
 ]
 
 const children = targets.map((target) => {

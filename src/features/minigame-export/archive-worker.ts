@@ -1,7 +1,7 @@
 import SevenZip from '7z-wasm'
 import type { SevenZipModule } from '7z-wasm'
 import wasmUrl from '7z-wasm/7zz.wasm?url'
-import { isObject, parseHistoryRecord, safeInteger } from './model'
+import { isObject, parseReplayRecord, safeInteger } from './model'
 import { unpackReplayArchive, validateReplay } from './archive'
 
 let codec: Promise<SevenZipModule> | undefined
@@ -21,7 +21,7 @@ globalThis.addEventListener('message', (event: MessageEvent<unknown>) => {
   const requestId = message.requestId
   void (async () => {
     try {
-      const record = parseHistoryRecord(message.record)
+      const record = parseReplayRecord(message.record)
       const data = record.payload.encoding === 'json'
         ? record.payload.data
         : unpackReplayArchive(record.payload.data, await getCodec())

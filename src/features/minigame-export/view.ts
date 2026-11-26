@@ -4,6 +4,7 @@ import { formatDateTime } from '../../shared/format'
 import { brandLogo, el, errorMessage, isAbortError } from '../../shared/ui'
 import { SiteHistoryClient, loadHistory, type HistorySnapshot, type HistorySource } from './client'
 import { WorkerReplayDecoder } from './decoder'
+import { downloadReplay } from './download'
 import { exportHistory } from './export'
 import { filterHistory } from './filter'
 import { GAME_LABELS, localHistoryTarget, modeIdentity, modeLabel, type HistoryIssue, type HistoryMetadata } from './model'
@@ -28,17 +29,6 @@ function field(label: string, control: HTMLElement): HTMLLabelElement {
   control.setAttribute('aria-label', label)
   node.append(el('span', undefined, label), control)
   return node
-}
-
-function download(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const link = el('a')
-  link.href = url
-  link.download = filename
-  document.body.append(link)
-  link.click()
-  link.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
 
 export async function mountMinigameExport(root: HTMLElement): Promise<void> {
@@ -366,7 +356,7 @@ export async function mountMinigameExport(root: HTMLElement): Promise<void> {
       controller.signal.throwIfAborted()
       issues.push(...result.issues)
       if (result.blob) {
-        download(result.blob, result.filename)
+        downloadReplay(result.blob, result.filename)
         const description = entries.length === 1 ? '单局录像 JSON 文件' : `包含 ${result.exported} 个独立 JSON 的 ZIP 文件`
         setStatus(`已生成${description}${result.issues.length ? `；${result.issues.length} 条失败，文件名已标记 partial，详见下方及 ZIP 中的 errors.txt` : ''}。`, result.issues.length > 0)
       } else setStatus('没有可导出的有效录像，未生成空文件。请查看下方详情。', true)

@@ -19,7 +19,7 @@ function localExportTimestamp(date: Date): string {
 }
 
 /** Use the same safe, timestamp-free name for a direct download and a member of a ZIP. */
-export function replayFilename(entry: HistoryMetadata): string {
+export function replayFilename(entry: Pick<HistoryMetadata, 'game' | 'mode' | 'scoreMs'> & { id: number | `player${number}` }): string {
   const level = entry.mode.key === 'b' ? 'beg' : entry.mode.key === 'i' ? 'int' : entry.mode.key === 'e' ? 'exp' : 'custom'
   const density = densityFraction(entry.mode.density)
   const score = `${Math.floor(entry.scoreMs / 1000)}.${String(entry.scoreMs % 1000).padStart(3, '0')}s`

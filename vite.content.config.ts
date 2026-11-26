@@ -8,20 +8,23 @@ const root = fileURLToPath(new URL('.', import.meta.url))
  * 内容脚本不能是 ES module（content_scripts 不支持 type: module），
  * 必须打成自包含的 IIFE，且不能有动态 import。
  */
-export default defineConfig({
-  publicDir: false,
-  build: {
-    outDir: 'dist',
-    emptyOutDir: false,
-    target: 'chrome120',
-    sourcemap: false,
-    rollupOptions: {
-      input: resolve(root, 'src/content/main.ts'),
-      output: {
-        format: 'iife',
-        entryFileNames: 'content/upload.js',
-        inlineDynamicImports: true,
+export default defineConfig(({ mode }) => {
+  const entry = mode === 'capture' ? 'minigame-capture' : 'upload'
+  return {
+    publicDir: false,
+    build: {
+      outDir: 'dist',
+      emptyOutDir: false,
+      target: 'chrome120',
+      sourcemap: false,
+      rollupOptions: {
+        input: resolve(root, entry === 'upload' ? 'src/content/main.ts' : 'src/content/minigame-capture.ts'),
+        output: {
+          format: 'iife',
+          entryFileNames: `content/${entry}.js`,
+          inlineDynamicImports: true,
+        },
       },
     },
-  },
+  }
 })
