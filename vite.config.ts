@@ -18,6 +18,7 @@ export default defineConfig({
         upload: resolve(root, 'upload.html'),
         player: resolve(root, 'player.html'),
         ranking: resolve(root, 'ranking.html'),
+        minigame: resolve(root, 'minigame.html'),
         offscreen: resolve(root, 'offscreen.html'),
       },
     },

@@ -59,7 +59,11 @@ export async function mountUserSearchOptions(root: HTMLElement): Promise<void> {
   rankingLink.target = '_blank'
   rankingLink.rel = 'noreferrer'
   const links = el('div', 'header-links')
-  links.append(rankingLink, uploadLink, siteLink)
+  const minigameLink = el('a', 'site-link', '小游戏录像 ↗')
+  minigameLink.href = chrome.runtime.getURL('minigame.html')
+  minigameLink.target = '_blank'
+  minigameLink.rel = 'noreferrer'
+  links.append(minigameLink, rankingLink, uploadLink, siteLink)
   header.append(brand, links)
 
   const featureCard = el('section', 'card')

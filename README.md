@@ -24,6 +24,7 @@
 - **站内赛博大表**：在 openms.top 玩家页显示「赛博大表」按钮，点一下才展开完整大表并自动带入当前玩家 ID；切换玩家或离开页面会自动销毁，设置页可关闭入口。
 - **统一关于卡片**：设置、自动上传、玩家数据页和全站排行榜底部显示同一张「关于」卡片，集中列出仓库、开发者 GitHub / 开源扫雷网、站点与大表原作者；版本号取自当前扩展，玩家页的网站、CSV 和站内嵌入模式均可见。popup 不显示该卡片。
 - **全站自定义排行榜**：按用户保存的录像 ID 区间加载公开数据，首次 detailbulk 建库，之后复用保存范围用 abstractbulk 同步、staticdetailbatch 补齐，再按自定义聚合公式和单指标排序生成玩家排行，方向在指标设置中修改、表头仅切换指标；排行榜置顶，筛选与指标收进默认收起的侧栏，支持暂停 / 断点继续、显式扩大范围、全局筛选、字段帮助、配置导入导出和本地 Worker 计算，不应用本机统计排除
+- **小游戏录像导出**：从 popup 或设置页进入，按游戏、模式和本地日期筛选成功局；单局 JSON，多局 ZIP。只读访问 openms.top 本地历史，详见[使用说明](docs/minigame-export.md)。
 - **我的成绩**：popup 头部「我的成绩」按钮直接打开自己的数据页，不用先搜自己；优先用站点登录态（打开 openms.top 时自动记录），没有就弹窗让你填一次站内 ID 并记住。数据页里也有同名按钮，从别人的成绩页一键跳回来
 - 浅色 / 深色主题跟随系统
 
@@ -225,6 +226,7 @@ npm run build
 - 自动上传只读取你选中的目录，只上传录像文件本身；目录句柄和上传台账只存在本机
 - 玩家数据只缓存公开的录像解析字段（软件、等级、用时、3BV、点击、路径等），按用户存在本机 IndexedDB
 - 全站排行榜缓存公开接口在用户保存的 ID 区间内返回的录像元信息与解析字段，按源站和 generation 保存在本机 IndexedDB；不会读取私有数据，也不会把全站数据塞入单玩家缓存
+- 小游戏录像由内容脚本只读访问站点自己的 IndexedDB，在扩展内使用打包的解压器生成本地 JSON 文件；不上传、不请求外部解压服务，也不修改、升级或清除站点历史
 - 站内嵌入只向 `openms.top` 开放 `player.html` 一个页面（`web_accessible_resources`），不开放 assets、字体或其他扩展页面；嵌入页与父页面只交换「页面已就绪」消息，不传成绩、CSV、缓存或设置
 - 「我的成绩」用的站点登录态只在本机保存用户 ID 和用户名，不存 cookie 或密码
 - 设置页提供「清空本地数据」
@@ -241,6 +243,7 @@ npm run build       # 产物输出到 dist/
 python scripts/pack-release.py dist release/yuanshen-helper-<version>.zip  # 发布包与 .zip.sha256，zip 内用 / 分隔
 npm run watch       # 持续构建；改完在 chrome://extensions 重新加载
 npm run verify:player -- 16   # 用站点接口对拍某个用户的 PB / 前端成绩
+npm run verify:minigame      # 构建后，在独立 Chromium 配置中运行小游戏导出浏览器回归；网站请求全部模拟
 ```
 
 **不要用 `vite dev` 加载扩展**：MV3 的 CSP 禁止 Vite dev 注入的 inline script / HMR，会导致页面空白。开发时使用 `npm run build` 或 `npm run watch`，然后在 Chrome 里重新加载扩展。
@@ -249,6 +252,8 @@ npm run verify:player -- 16   # 用站点接口对拍某个用户的 PB / 前端
 ### 项目结构
 
 界面字体使用 MiSans（© Xiaomi），只打包 UI 文案用到的字形子集；字体归属和许可说明见 `public/fonts/misans/NOTICE.txt`。
+
+小游戏录像解压使用随扩展打包的 `7z-wasm` 1.2.0（7-Zip），许可见 `public/licenses/7z-wasm.txt`；批量 ZIP 打包使用 `@zip.js/zip.js` 2.25.0 及其附带的压缩实现，许可见 `public/licenses/zip-js.txt`、`public/licenses/zlib-streams.txt`。实现与来源说明见[小游戏录像导出](docs/minigame-export.md#开发与验证)。
 
 ```
 src/

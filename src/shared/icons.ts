@@ -25,6 +25,7 @@ export type IconName =
   | 'settings'
   | 'refresh'
   | 'upload'
+  | 'download'
   | 'play'
   | 'pause'
   | 'chart'
@@ -43,6 +44,10 @@ export function icon(name: IconName): SVGSVGElement {
   } else if (name === 'upload') {
     add(svg, 'path', { d: 'M12 16V4' })
     add(svg, 'path', { d: 'M7.5 8.5 12 4l4.5 4.5' })
+    add(svg, 'path', { d: 'M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3' })
+  } else if (name === 'download') {
+    add(svg, 'path', { d: 'M12 4v12' })
+    add(svg, 'path', { d: 'm7.5 11.5 4.5 4.5 4.5-4.5' })
     add(svg, 'path', { d: 'M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3' })
   } else if (name === 'play') {
     add(svg, 'path', { d: 'M8 5.5 18 12 8 18.5Z', fill: 'currentColor', stroke: 'none' })

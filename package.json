@@ -10,9 +10,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify": "npm run typecheck && npm run test && npm run build",
+    "verify:minigame": "node tests/browser/minigame-export.mjs",
     "verify:player": "node --import ./scripts/ts-resolve.mjs scripts/verify-player-stats.ts"
   },
   "dependencies": {
+    "@zip.js/zip.js": "2.25.0",
+    "7z-wasm": "1.2.0",
     "idb": "^8.0.4",
     "pinyin-pro": "^3.29.5"
   },
@@ -20,6 +23,7 @@
     "@types/chrome": "^0.3.6",
     "@types/node": "^24.10.0",
     "fake-indexeddb": "^6.2.6",
+    "playwright": "1.60.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.7",
     "vitest": "^3.2.7"

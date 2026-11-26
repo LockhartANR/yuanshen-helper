@@ -15,6 +15,7 @@ import {
   openOptionsPage,
   openPlayerStatsTab,
   openRankingTab,
+  openMinigameExportTab,
   openPlayerTab,
 } from '../../shared/ui'
 import {
@@ -233,6 +234,20 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
       .catch(() => setHint('打开自定义排行榜失败，请稍后重试'))
   })
 
+  const minigameEntry = el('button', 'csv-entry')
+  minigameEntry.type = 'button'
+  minigameEntry.title = '导出 openms.top 小游戏本地历史录像'
+  minigameEntry.append(
+    icon('download'),
+    el('span', 'csv-entry-label', '小游戏录像'),
+    el('span', 'csv-entry-note', '导出本地历史'),
+  )
+  minigameEntry.addEventListener('click', () => {
+    void openMinigameExportTab()
+      .then(() => window.close())
+      .catch(() => setHint('打开小游戏录像导出失败，请稍后重试'))
+  })
+
   const results = el('main', 'results')
   results.id = 'search-results'
   results.setAttribute('role', 'listbox')
@@ -251,7 +266,7 @@ export async function mountUserSearchPopup(root: HTMLElement): Promise<void> {
   syncButton.append(syncIcon, syncLabel)
   statusbar.append(statusText, syncButton)
 
-  root.append(header, searchRow, csvEntry, rankingEntry, results, hint, statusbar)
+  root.append(header, searchRow, csvEntry, rankingEntry, minigameEntry, results, hint, statusbar)
   renderIdentifierToggle()
   identifierToggle.addEventListener('click', () => void toggleIdentifierLookup())
 

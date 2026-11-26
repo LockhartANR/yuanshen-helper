@@ -1,4 +1,4 @@
-import { CSV_PLAYER_PAGE, PLAYER_URL } from './constants'
+import { CSV_PLAYER_PAGE, PLAYER_URL, SITE_ORIGIN } from './constants'
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -104,6 +104,19 @@ export function rankingPageUrl(): string {
 /** 打开独立全站排行榜页。 */
 export async function openRankingTab(): Promise<void> {
   await chrome.tabs.create({ url: rankingPageUrl() })
+}
+
+/** Preserve the active source tab so the export page can locate its current local replay. */
+export async function openMinigameExportTab(): Promise<void> {
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const params = new URLSearchParams()
+  if (typeof active?.id === 'number' && active.url) {
+    try {
+      if (new URL(active.url).origin === SITE_ORIGIN) params.set('tab', String(active.id))
+    } catch { /* An unsupported tab has no website history source. */ }
+  }
+  const query = params.size ? `?${params}` : ''
+  await chrome.tabs.create({ url: chrome.runtime.getURL(`minigame.html${query}`) })
 }
 
 export function openOptionsPage(): void {
