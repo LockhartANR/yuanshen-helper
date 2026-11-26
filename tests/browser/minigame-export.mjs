@@ -33,6 +33,8 @@ function pack(value) {
 const packed = { 'left-click': pack(mouse), 'flag-chord': pack(flag), 'missing-cell': pack(missing), reaction: pack(reaction), 'multi-touch': pack(touch) }
 const playbackFixture = await readFile('tests/browser/fixtures/minigame-playback.js', 'utf8')
 const replayRequests = []
+const submissionRequests = []
+let nextSubmissionImproved = true
 const onlineFixtures = new Map([
   [95, { bytes: packed['left-click'], score: 1234 }],
   [96, { bytes: packed['left-click'], score: 2345 }],
@@ -79,6 +81,16 @@ try {
       await route.fulfill({ contentType: 'text/html;charset=utf-8', body: '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>原生回放测试</title><style>body{font:14px sans-serif;color:var(--ui-text-color-regular,#303133);background:var(--ui-bg-color,#fff);padding:16px}.training-page{display:grid;gap:.75rem;min-width:0;text-align:center}.training-controls,.minigame-replay-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.training-controls{justify-content:center}.minigame-replay-controls{width:100%;max-width:52rem;min-width:0;margin-inline:auto}.minigame-replay-controls input{flex:1 1 10rem;min-width:0;margin:0}.dark{--ui-bg-color:#141414;--ui-text-color-regular:#ddd;--ui-color-primary:#337ecc}</style><script src="/replay-fixture.js"></script></head><body></body></html>' })
     } else if (url.pathname === '/replay-fixture.js') {
       await route.fulfill({ contentType: 'text/javascript', body: playbackFixture })
+    } else if (route.request().method() === 'POST' && /^\/api\/minigame\/[^/]+\/score$/.test(url.pathname)) {
+      const form = new URLSearchParams(route.request().postData() ?? '')
+      const rankingKey = url.pathname.split('/').at(-2)
+      const score = Number(form.get('score'))
+      const replay = JSON.parse(form.get('replay') ?? 'null')
+      submissionRequests.push({ rankingKey, score, replay })
+      const improved = nextSubmissionImproved
+      nextSubmissionImproved = false
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ improved,
+        record: { ranking_key: rankingKey, score, id: 1, player_id: 16, achieved_at: '2026-11-26T00:00:00Z' } }) })
     } else if (/^\/api\/minigame\/[^/]+\/replay$/.test(url.pathname)) {
       const player = Number(url.searchParams.get('player'))
       replayRequests.push({ player, key: url.searchParams.get('key') })
@@ -132,8 +144,7 @@ try {
   await app.goto(`chrome-extension://${extensionId}/minigame.html?tab=${tabId}`)
   const playback = app.getByRole('complementary', { name: '录像播放提示' })
   await playback.waitFor({ state: 'visible' })
-  assert.match(await playback.innerText(), /左键和标双训练的录像可以在 Anon Player 播放/)
-  assert.match(await playback.innerText(), /多局 ZIP 请先解压/)
+  assert.match(await playback.innerText(), /Anon Player 支持左键、标双 JSON；多局 ZIP 请先解压。/)
   const playerLink = playback.getByRole('link', { name: 'Anon Player', exact: true })
   assert.equal(await playerLink.getAttribute('href'), 'https://player.lockhart.ren/')
   assert.equal(await playerLink.getAttribute('target'), '_blank')
@@ -142,7 +153,7 @@ try {
   assert.equal(await playerLink.evaluate((node) => getComputedStyle(node).textDecorationLine), 'underline')
   const playbackBounds = await playback.boundingBox()
   assert.ok(playbackBounds && playbackBounds.y >= 0 && playbackBounds.y + playbackBounds.height <= 900)
-  passed('prominent replay notice links left-click and flag-chord recordings to Anon Player in a new tab')
+  passed('prominent replay notice links exported JSON to Anon Player in a new tab')
   const status = app.getByRole('status')
   assert.equal(await app.locator('button').filter({ hasText: /^取消$/ }).isVisible(), false)
   async function load(expected) {
@@ -374,27 +385,27 @@ try {
   async function assertNativeExportLayout() {
     const layout = await native.evaluate(() => {
       const host = document.getElementById('ysh-minigame-export')
-      const button = host?.querySelector('button')
+      const actions = host?.querySelector('.ysh-minigame-actions')
       const page = document.querySelector('.training-page')
       const timeline = page?.querySelector('.minigame-replay-controls')
       const anchor = timeline ?? page?.querySelector('.training-controls')
-      if (!host || !button || !anchor) throw new Error('Missing native export layout')
+      if (!host || !actions || !anchor) throw new Error('Missing native replay action layout')
       const row = host.getBoundingClientRect()
-      const action = button.getBoundingClientRect()
+      const action = actions.getBoundingClientRect()
       const reference = anchor.getBoundingClientRect()
       const status = host.querySelector('[role="status"]')
       return {
         adjacent: timeline ? host.nextElementSibling === anchor : host.previousElementSibling === anchor,
         separate: timeline ? row.bottom <= reference.top : row.top >= reference.bottom,
         rowOffset: Math.abs(row.x + row.width / 2 - reference.x - reference.width / 2),
-        buttonOffset: Math.abs(action.x + action.width / 2 - reference.x - reference.width / 2),
+        actionsOffset: Math.abs(action.x + action.width / 2 - reference.x - reference.width / 2),
         statusBelow: !status || status.hidden || status.getBoundingClientRect().top >= action.bottom,
       }
     })
     assert.equal(layout.adjacent, true)
     assert.equal(layout.separate, true)
     assert.ok(layout.rowOffset < 1, 'export row should be centered with the native controls')
-    assert.ok(layout.buttonOffset < 1, 'export button should stay centered when status is shown')
+    assert.ok(layout.actionsOffset < 1, 'replay action buttons should stay centered when status is shown')
     assert.equal(layout.statusBelow, true)
   }
   async function injectedDownload() {
@@ -417,12 +428,20 @@ try {
   }
   await native.goto('https://openms.top/replay-fixture#/minigame/left-click?history=590')
   await nativeButton.waitFor()
+  const nativeUpload = native.locator('#ysh-minigame-export button').nth(1)
+  assert.equal(await nativeUpload.isVisible(), true)
   const nativeLocal = await injectedDownload()
   assert.equal(nativeLocal.name, densitySingle.name)
   assert.deepEqual(nativeLocal.json, densitySingle.json)
   assert.equal(nativeLocal.text, densitySingle.text)
   assert.equal(await native.locator('#ysh-minigame-export a').count(), 0)
   assert.equal((await injectedDownload()).text, nativeLocal.text)
+  await nativeUpload.click()
+  await native.getByRole('status').filter({ hasText: '已上传并刷新个人最佳' }).waitFor()
+  assert.equal(await nativeUpload.textContent(), '已上传')
+  assert.equal(await nativeUpload.isDisabled(), true)
+  assert.deepEqual(submissionRequests[0], { rankingKey: 'left-click-i-75-v1', score: 1234, replay: mouse })
+  passed('local playback submits its IndexedDB replay and metadata to the matching ranking without a file picker')
   await native.getByRole('button', { name: '播放', exact: true }).click()
   assert.equal(await native.getByRole('button', { name: '暂停', exact: true }).count(), 1)
   await native.evaluate(() => { window.renderFixturePlayback(); window.renderFixturePlayback() })
@@ -447,11 +466,17 @@ try {
   const nativeMissing = await injectedDownload()
   assert.equal(nativeMissing.name, 'missing-cell-beg-1.234s-588.json')
   assert.deepEqual(nativeMissing.json.replay, missing)
+  assert.equal(await nativeUpload.isVisible(), true)
+  await nativeUpload.click()
+  await native.getByRole('status').filter({ hasText: '没有刷新个人最佳' }).waitFor()
+  assert.deepEqual(submissionRequests[1], { rankingKey: 'missing-cell-b-v1', score: 1234, replay: missing })
+  passed('local playback explains that a non-best submission leaves the stored best score and replay unchanged')
   passed('missing-cell playback exports in a centered row below its level controls without a timeline')
 
   // Full navigation makes the request begin in the head, before the idle content script starts.
   await native.goto('https://openms.top/replay-fixture?early=1#/minigame/left-click?player=95&key=b-50-v1')
   await nativeButton.waitFor()
+  assert.equal(await nativeUpload.isVisible(), false)
   assert.deepEqual(await native.evaluate(() => window.fixtureBytes), packed['left-click'])
   onlineFixtures.set(95, { bytes: pack({ ...mouse, fixture: 'new-pb' }), score: 999 })
   const nativeOnline = await injectedDownload()

@@ -66,8 +66,8 @@ export async function mountMinigameExport(root: HTMLElement): Promise<void> {
   playerLink.href = 'https://player.lockhart.ren/'
   playerLink.target = '_blank'
   playerLink.rel = 'noopener noreferrer'
-  playbackText.append(el('strong', undefined, '左键和标双训练'), '的录像可以在 ', playerLink, ' 播放。')
-  playback.append(playbackText, el('p', undefined, '导出 JSON 后导入播放器；多局 ZIP 请先解压。'))
+  playbackText.append(playerLink, ' 支持左键、标双 JSON；多局 ZIP 请先解压。')
+  playback.append(playbackText)
 
   const connection = el('section', 'card')
   connection.append(el('h2', undefined, '读取本机历史'), el('p', 'desc',
